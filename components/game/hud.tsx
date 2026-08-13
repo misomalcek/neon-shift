@@ -1,6 +1,9 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useGame } from '@/lib/game-store'
+
+const Controls = dynamic(() => import('./controls').then(m => m.Controls), { ssr: false })
 
 export function Hud() {
   const shards = useGame((s) => s.shards)
@@ -78,6 +81,8 @@ export function Hud() {
           </div>
         </div>
       </div>
+
+      <Controls />
     </div>
   )
 }

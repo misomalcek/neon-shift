@@ -5,6 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useGame, world } from '@/lib/game-store'
 import { CHUNK_SIZE, buildingAt, sectorName } from '@/lib/procgen'
+import { keys, initKeyboardListeners } from '@/lib/input'
 
 const CRUISE = 16
 const BOOST = 34
@@ -13,7 +14,6 @@ const CLIMB = 14
 
 export function Player() {
   const group = useRef<THREE.Group>(null)
-  const keys = useRef<Record<string, boolean>>({})
   const camera = useThree((s) => s.camera)
   const setSpeed = useGame((s) => s.setSpeed)
   const setSector = useGame((s) => s.setSector)
@@ -27,24 +27,15 @@ export function Player() {
   const pitch = useRef(0)
 
   useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      keys.current[e.code] = true
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault()
-    }
-    const up = (e: KeyboardEvent) => (keys.current[e.code] = false)
-    window.addEventListener('keydown', down)
-    window.addEventListener('keyup', up)
-    return () => {
-      window.removeEventListener('keydown', down)
-      window.removeEventListener('keyup', up)
-    }
+    const cleanup = initKeyboardListeners()
+    return cleanup
   }, [])
 
   useFrame((_, rawDt) => {
     const dt = Math.min(rawDt, 0.05)
     const g = group.current
     if (!g || !started) return
-    const k = keys.current
+    const k = keys
 
     // Steering
     const turnInput = (k.KeyA || k.ArrowLeft ? 1 : 0) - (k.KeyD || k.ArrowRight ? 1 : 0)
