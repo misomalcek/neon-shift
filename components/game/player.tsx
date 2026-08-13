@@ -6,6 +6,7 @@ import * as THREE from 'three'
 import { useGame, world } from '@/lib/game-store'
 import { CHUNK_SIZE, buildingAt, sectorName } from '@/lib/procgen'
 import { keys, initKeyboardListeners } from '@/lib/input'
+import { spawnBullet } from '@/lib/weapons'
 
 const CRUISE = 16
 const BOOST = 34
@@ -25,6 +26,7 @@ export function Player() {
   const speedRef = useRef(CRUISE)
   const bank = useRef(0)
   const pitch = useRef(0)
+  const fireCooldown = useRef(0)
 
   useEffect(() => {
     const cleanup = initKeyboardListeners()
@@ -40,12 +42,27 @@ export function Player() {
     // Steering
     const turnInput = (k.KeyA || k.ArrowLeft ? 1 : 0) - (k.KeyD || k.ArrowRight ? 1 : 0)
     const climbInput = (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0)
-    const boosting = k.ShiftLeft || k.ShiftRight || k.Space
+    // Space is now dedicated to firing; only Shift keys boost
+    const boosting = k.ShiftLeft || k.ShiftRight
 
     world.heading += turnInput * TURN * dt
     const targetSpeed = (boosting ? BOOST : CRUISE) + world.boost
     speedRef.current = THREE.MathUtils.damp(speedRef.current, targetSpeed, 3, dt)
     world.boost = Math.max(0, world.boost - dt * 10)
+
+    // Fire handling
+    fireCooldown.current = Math.max(0, fireCooldown.current - dt)
+    if (k.Space && fireCooldown.current === 0) {
+      // spawn bullet in front of player
+      const dirX = Math.sin(world.heading)
+      const dirZ = Math.cos(world.heading)
+      const bx = world.playerPos.x + dirX * 2
+      const by = world.playerPos.y
+      const bz = world.playerPos.z + dirZ * 2
+      const speed = 80
+      spawnBullet(bx, by, bz, dirX * speed, 0, dirZ * speed, 2)
+      fireCooldown.current = 0.18 // ~5.5 shots/sec
+    }
 
     // Move forward along heading
     const dirX = Math.sin(world.heading)

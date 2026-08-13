@@ -4,6 +4,7 @@ import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useGame, world } from '@/lib/game-store'
+import { bullets } from '@/lib/weapons'
 
 const COUNT = 42
 const RANGE = 130 // drones live inside this radius of the player, wrapping around
@@ -22,6 +23,7 @@ export function Drones() {
   const mesh = useRef<THREE.InstancedMesh>(null)
   const setHeat = useGame((s) => s.setHeat)
   const loseShard = useGame((s) => s.loseShard)
+  const registerKill = useGame((s) => s.registerKill)
   const hitCooldown = useRef(0)
 
   const drones = useMemo<Drone[]>(
@@ -51,6 +53,17 @@ export function Drones() {
     const p = world.playerPos
     playerV.set(p.x, p.y, p.z)
     hitCooldown.current = Math.max(0, hitCooldown.current - dt)
+
+    // Update bullets physics here so collisions are deterministic in the same loop
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i]
+      b.x += b.vx * dt
+      b.y += b.vy * dt
+      b.z += b.vz * dt
+      b.life -= dt
+      if (b.life <= 0) bullets.splice(i, 1)
+    }
+
     const shards = useGame.getState().shards
     // Carrying more shards makes you "louder" — drones sense you from farther away.
     const senseRadius = 18 + Math.min(shards, 20) * 2.2
@@ -123,6 +136,25 @@ export function Drones() {
       if (d.pos.x - p.x < -RANGE) d.pos.x += RANGE * 2
       if (d.pos.z - p.z > RANGE) d.pos.z -= RANGE * 2
       if (d.pos.z - p.z < -RANGE) d.pos.z += RANGE * 2
+
+      // Check bullets collisions
+      for (let bi = bullets.length - 1; bi >= 0; bi--) {
+        const b = bullets[bi]
+        const dx = d.pos.x - b.x
+        const dy = d.pos.y - b.y
+        const dz = d.pos.z - b.z
+        const dist2 = dx * dx + dy * dy + dz * dz
+        if (dist2 < 1.5 * 1.5) {
+          // hit
+          bullets.splice(bi, 1)
+          // register a kill/score
+          registerKill(1)
+          // knock drone away and calm it
+          d.agitation = 0
+          d.vel.set(Math.sin(i) * 30, 10, Math.cos(i) * 30)
+          break
+        }
+      }
 
       // Contact: steal shards and scatter
       if (pd < 2.6 && hitCooldown.current === 0 && useGame.getState().started) {
