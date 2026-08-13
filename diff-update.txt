@@ -1,0 +1,4995 @@
+Showing 8 changed files
+
+drones.tsx
+
+components/game/drones.tsx
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+'use client';
+import { useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { useGame, world } from '@/lib/game-store';
+const COUNT = 42
+const RANGE = 130 // drones live inside this radius of the player, wrapping around
+const dummy = new THREE.Object3D()
+const calm = new THREE.Color(' #00f0ff').multiplyScalar(1.6)
+const angry = new THREE.Color(' #ff2040').multiplyScalar(2.4)
+const mix = new THREE.Color()
+type Drone = {
+  pos: THREE.Vector3
+  vel: THREE.Vector3
+  agitation: number // 0 calm wanderer .. 1 hunter Ă˘â‚¬â€ť spreads between neighbors
+}
+export function Drones() {
+  const mesh = useRef<THREE.InstancedMesh>(null)
+  const setHeat = useGame((s) => s.setHeat)
+  const loseShard = useGame((s) => s.loseShard)
+  const hitCooldown = useRef(0)
+  const elapsed = useRef(0)
+  const drones = useMemo<Drone[]>(
+    () =>
+      Array.from({ length: COUNT }, (_, i) => ({
+        pos: new THREE.Vector3(
+          (Math.sin(i * 12.9898) * 0.5 + 0.5) * RANGE * 2 - RANGE,
+          10 + (Math.sin(i * 78.233) * 0.5 + 0.5) * 35,
+          (Math.sin(i * 39.425) * 0.5 + 0.5) * RANGE * 2 - RANGE
+        ),
+        vel: new THREE.Vector3(Math.sin(i), 0, Math.cos(i)).multiplyScalar(6),
+        agitation: 0,
+      })),
+    []
+  )
+  const steer = useMemo(() => new THREE.Vector3(), [])
+  const diff = useMemo(() => new THREE.Vector3(), [])
+  const center = useMemo(() => new THREE.Vector3(), [])
+  const avgVel = useMemo(() => new THREE.Vector3(), [])
+  const playerV = useMemo(() => new THREE.Vector3(), [])
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    elapsed.current += dt
+    const m = mesh.current
+    if (!m) return
+    const p = world.playerPos
+    playerV.set(p.x, p.y, p.z)
+    hitCooldown.current = Math.max(0, hitCooldown.current - dt)
+    const shards = useGame.getState().shards
+    // Carrying more shards makes you "louder" Ă˘â‚¬â€ť drones sense you from farther away.
+    const senseRadius = 18 + Math.min(shards, 20) * 2.2
+    let totalAgitation = 0
+    for (let i = 0; i < COUNT; i++) {
+      const d = drones[i]
+      steer.set(0, 0, 0)
+      center.set(0, 0, 0)
+      avgVel.set(0, 0, 0)
+      let neighbors = 0
+      let neighborAgitation = 0
+      for (let j = 0; j < COUNT; j++) {
+        if (i === j) continue
+        const o = drones[j]
+        const distSq = d.pos.distanceToSquared(o.pos)
+        if (distSq < 400) {
+          neighbors++
+          neighborAgitation = Math.max(neighborAgitation, o.agitation)
+          center.add(o.pos)
+          avgVel.add(o.vel)
+          if (distSq < 36) {
+            // separation
+            diff.subVectors(d.pos, o.pos).normalize().multiplyScalar(14 / (Math.sqrt(distSq) + 0.1))
+            steer.add(diff)
+          }
+        }
+      }
+      if (neighbors > 0) {
+        center.divideScalar(neighbors)
+        steer.add(diff.subVectors(center, d.pos).multiplyScalar(0.04)) // cohesion
+        steer.add(avgVel.divideScalar(neighbors).sub(d.vel).multiplyScalar(0.08)) // alignment
+      }
+      // Sense the player
+      const pd = d.pos.distanceTo(playerV)
+      if (pd < senseRadius) {
+        d.agitation = Math.min(1, d.agitation + dt * 1.2)
+      } else {
+        d.agitation = Math.max(0, d.agitation - dt * 0.15)
+      }
+      // Agitation is contagious Ă˘â‚¬â€ť panic ripples through the swarm (emergence)
+      if (neighborAgitation > d.agitation) {
+        d.agitation = Math.min(neighborAgitation, d.agitation + dt * 0.8)
+      }
+      // Hunters chase; calm drones wander on noise
+      if (d.agitation > 0.4) {
+        diff.subVectors(playerV, d.pos).normalize().multiplyScalar(10 * d.agitation)
+        steer.add(diff)
+      } else {
+        const t = elapsed.current * 0.3 + i
+        steer.x += Math.sin(t) * 1.4
+        steer.z += Math.cos(t * 0.9) * 1.4
+        steer.y += Math.sin(t * 0.6) * 0.6
+      }
+      // Altitude band
+      if (d.pos.y < 6) steer.y += 6
+      if (d.pos.y > 50) steer.y -= 6
+      d.vel.addScaledVector(steer, dt)
+      const maxSpeed = 8 + d.agitation * 15
+      if (d.vel.length() > maxSpeed) d.vel.setLength(maxSpeed)
+      d.pos.addScaledVector(d.vel, dt)
+      // Wrap around the player so the swarm is infinite too
+      if (d.pos.x - p.x > RANGE) d.pos.x -= RANGE * 2
+      if (d.pos.x - p.x < -RANGE) d.pos.x += RANGE * 2
+      if (d.pos.z - p.z > RANGE) d.pos.z -= RANGE * 2
+      if (d.pos.z - p.z < -RANGE) d.pos.z += RANGE * 2
+      // Contact: steal shards and scatter
+      if (pd < 2.6 && hitCooldown.current === 0 && useGame.getState().started) {
+        hitCooldown.current = 1.2
+        loseShard()
+        d.agitation = 0
+        d.vel.set(Math.sin(i) * 20, 8, Math.cos(i) * 20)
+      }
+      totalAgitation += d.agitation
+      dummy.position.copy(d.pos)
+      dummy.lookAt(d.pos.x + d.vel.x, d.pos.y + d.vel.y, d.pos.z + d.vel.z)
+      const s = 0.7 + d.agitation * 0.3
+      dummy.scale.set(s, s, s * 1.6)
+      dummy.updateMatrix()
+      m.setMatrixAt(i, dummy.matrix)
+      m.setColorAt(i, mix.lerpColors(calm, angry, d.agitation))
+    }
+    m.instanceMatrix.needsUpdate = true
+    if (m.instanceColor) m.instanceColor.needsUpdate = true
+    const heat = totalAgitation / COUNT
+    if (Math.abs(useGame.getState().heat - heat) > 0.04) setHeat(heat)
+  })
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, COUNT]} frustumCulled={false}>
+      <octahedronGeometry args={[0.9, 0]} />
+      <meshBasicMaterial toneMapped={false} />
+    </instancedMesh>
+  )
+}
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+244
+245
+246
+247
+248
+249
+250
+251
+252
+253
+254
+255
+256
+257
+258
+259
+260
+261
+262
+263
+264
+265
+266
+267
+268
+269
+270
+271
+272
+273
+274
+275
+276
+277
+278
+279
+280
+281
+282
+283
+284
+285
+286
+287
+288
+289
+290
+291
+292
+293
+294
+295
+296
+297
+298
+299
+300
+301
+302
+303
+304
+305
+306
+307
+308
+309
+310
+311
+312
+313
+314
+315
+316
+317
+318
+319
+320
+321
+322
+323
+324
+325
+326
+327
+328
+329
+330
+331
+332
+333
+334
+335
+336
+337
+338
+339
+340
+341
+342
+343
+344
+345
+346
+347
+348
+349
+350
+351
+352
+353
+354
+355
+356
+357
+358
+359
+360
+361
+362
+363
+364
+365
+366
+367
+368
+369
+370
+371
+372
+373
+374
+375
+376
+377
+378
+379
+380
+381
+382
+383
+384
+385
+386
+387
+388
+import { useGame, world } from '@/lib/game-store';
+const COUNT = 42
+const RANGE = 130 // drones live inside this radius of the player, wrapping around
+const calm = new THREE.Color('#00f0ff').multiplyScalar(1.6)
+const angry = new THREE.Color('#ff2040').multiplyScalar(2.4)
+const mix = new THREE.Color()
+type Drone = {
+  agitation: number // 0 calm wanderer .. 1 hunter Ă˘â‚¬â€ť spreads between neighbors
+export function Drones() {
+  const mesh = useRef<THREE.InstancedMesh>(null)
+  const loseShard = useGame((s) => s.loseShard)
+  const drones = useMemo<Drone[]>(
+    () =>
+      Array.from({ length: COUNT }, (_, i) => ({
+        pos: new THREE.Vector3(
+          (Math.sin(i * 12.9898) * 0.5 + 0.5) * RANGE * 2 - RANGE,
+          10 + (Math.sin(i * 78.233) * 0.5 + 0.5) * 35,
+          (Math.sin(i * 39.425) * 0.5 + 0.5) * RANGE * 2 - RANGE
+        ),
+        vel: new THREE.Vector3(Math.sin(i), 0, Math.cos(i)).multiplyScalar(6),
+        agitation: 0,
+      })),
+    []
+  )
+  const steer = useMemo(() => new THREE.Vector3(), [])
+  const diff = useMemo(() => new THREE.Vector3(), [])
+  const center = useMemo(() => new THREE.Vector3(), [])
+  const avgVel = useMemo(() => new THREE.Vector3(), [])
+  const playerV = useMemo(() => new THREE.Vector3(), [])
+    const m = mesh.current
+    if (!m) return
+    const shards = useGame.getState().shards
+    // Carrying more shards makes you "louder" Ă˘â‚¬â€ť drones sense you from farther away.
+    const senseRadius = 18 + Math.min(shards, 20) * 2.2
+    for (let i = 0; i < COUNT; i++) {
+      const d = drones[i]
+      center.set(0, 0, 0)
+      avgVel.set(0, 0, 0)
+      let neighbors = 0
+      let neighborAgitation = 0
+      for (let j = 0; j < COUNT; j++) {
+        if (i === j) continue
+        const o = drones[j]
+        const distSq = d.pos.distanceToSquared(o.pos)
+        if (distSq < 400) {
+          neighbors++
+          neighborAgitation = Math.max(neighborAgitation, o.agitation)
+          center.add(o.pos)
+          avgVel.add(o.vel)
+          if (distSq < 36) {
+            // separation
+            diff.subVectors(d.pos, o.pos).normalize().multiplyScalar(14 / (Math.sqrt(distSq) + 0.1))
+      }
+      if (neighbors > 0) {
+        center.divideScalar(neighbors)
+        steer.add(diff.subVectors(center, d.pos).multiplyScalar(0.04)) // cohesion
+        steer.add(avgVel.divideScalar(neighbors).sub(d.vel).multiplyScalar(0.08)) // alignment
+      // Sense the player
+      const pd = d.pos.distanceTo(playerV)
+      if (pd < senseRadius) {
+        d.agitation = Math.min(1, d.agitation + dt * 1.2)
+      } else {
+        d.agitation = Math.max(0, d.agitation - dt * 0.15)
+      // Agitation is contagious Ă˘â‚¬â€ť panic ripples through the swarm (emergence)
+      if (neighborAgitation > d.agitation) {
+        d.agitation = Math.min(neighborAgitation, d.agitation + dt * 0.8)
+      // Hunters chase; calm drones wander on noise
+      if (d.agitation > 0.4) {
+        diff.subVectors(playerV, d.pos).normalize().multiplyScalar(10 * d.agitation)
+        steer.add(diff)
+        const t = elapsed.current * 0.3 + i
+        steer.x += Math.sin(t) * 1.4
+        steer.z += Math.cos(t * 0.9) * 1.4
+        steer.y += Math.sin(t * 0.6) * 0.6
+      }
+      // Altitude band
+      if (d.pos.y < 6) steer.y += 6
+      if (d.pos.y > 50) steer.y -= 6
+      d.vel.addScaledVector(steer, dt)
+      const maxSpeed = 8 + d.agitation * 15
+      if (d.vel.length() > maxSpeed) d.vel.setLength(maxSpeed)
+      d.pos.addScaledVector(d.vel, dt)
+      // Wrap around the player so the swarm is infinite too
+      if (d.pos.x - p.x > RANGE) d.pos.x -= RANGE * 2
+      if (d.pos.x - p.x < -RANGE) d.pos.x += RANGE * 2
+      if (d.pos.z - p.z > RANGE) d.pos.z -= RANGE * 2
+      if (d.pos.z - p.z < -RANGE) d.pos.z += RANGE * 2
+      // Contact: steal shards and scatter
+      if (pd < 2.6 && hitCooldown.current === 0 && useGame.getState().started) {
+        hitCooldown.current = 1.2
+        loseShard()
+        d.agitation = 0
+        d.vel.set(Math.sin(i) * 20, 8, Math.cos(i) * 20)
+      }
+      totalAgitation += d.agitation
+      dummy.position.copy(d.pos)
+      dummy.lookAt(d.pos.x + d.vel.x, d.pos.y + d.vel.y, d.pos.z + d.vel.z)
+      const s = 0.7 + d.agitation * 0.3
+      dummy.scale.set(s, s, s * 1.6)
+      m.setMatrixAt(i, dummy.matrix)
+      m.setColorAt(i, mix.lerpColors(calm, angry, d.agitation))
+    }
+    m.instanceMatrix.needsUpdate = true
+    if (m.instanceColor) m.instanceColor.needsUpdate = true
+    const heat = totalAgitation / COUNT
+    <instancedMesh ref={mesh} args={[undefined, undefined, COUNT]} frustumCulled={false}>
+      <octahedronGeometry args={[0.9, 0]} />
+'use client';
+import { useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { useGame, world, bullets } from '@/lib/game-store';
+import { getLevelEnemyConfig, type EnemyType } from '@/lib/procgen';
+// Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Enemy instance Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+type Enemy = {
+  id: number
+  type: EnemyType
+  pos: THREE.Vector3
+  vel: THREE.Vector3
+  health: number
+  maxHealth: number
+  agitation: number
+  fireTimer: number
+  active: boolean
+  // config
+  speed: number
+  damage: number
+  fireRate: number
+  range: number
+  score: number
+  spawnOffset: THREE.Vector3
+}
+const RANGE = 160
+const dummy = new THREE.Object3D()
+// Per-type colors
+const TYPE_COLORS: Record<EnemyType, { calm: THREE.Color; angry: THREE.Color }> = {
+  scout: {
+    calm: new THREE.Color(' #00f0ff').multiplyScalar(1.6),
+    angry: new THREE.Color(' #ff4020').multiplyScalar(2.4),
+  },
+  gunship: {
+    calm: new THREE.Color(' #ffb300').multiplyScalar(1.4),
+    angry: new THREE.Color(' #ff2d95').multiplyScalar(2.8),
+  },
+  tank: {
+    calm: new THREE.Color(' #8844ff').multiplyScalar(1.2),
+    angry: new THREE.Color(' #ff0000').multiplyScalar(3.0),
+  },
+  turret: {
+    calm: new THREE.Color(' #ff2d95').multiplyScalar(1.0),
+    angry: new THREE.Color(' #ff2d95').multiplyScalar(3.0),
+  },
+}
+const colorMix = new THREE.Color()
+const steer = new THREE.Vector3()
+const diff = new THREE.Vector3()
+const playerV = new THREE.Vector3()
+// Enemy bullets (separate from player bullets)
+type EnemyBullet = {
+  pos: THREE.Vector3
+  vel: THREE.Vector3
+  life: number
+  active: boolean
+  damage: number
+}
+const ENEMY_BULLET_COUNT = 80
+const enemyBullets: EnemyBullet[] = Array.from({ length: ENEMY_BULLET_COUNT }, () => ({
+  pos: new THREE.Vector3(0, -9999, 0),
+  vel: new THREE.Vector3(),
+  life: 0,
+  active: false,
+  damage: 10,
+}))
+const eBulletDummy = new THREE.Object3D()
+const eBulletColor = new THREE.Color(' #ff4400').multiplyScalar(3)
+function spawnEnemyBullet(pos: THREE.Vector3, dir: THREE.Vector3, damage: number) {
+  for (let i = 0; i < ENEMY_BULLET_COUNT; i++) {
+    if (!enemyBullets[i].active) {
+      enemyBullets[i].active = true
+      enemyBullets[i].life = 1.5
+      enemyBullets[i].pos.copy(pos)
+      enemyBullets[i].vel.copy(dir).multiplyScalar(55)
+      enemyBullets[i].damage = damage
+      return
+    }
+  }
+}
+export function Enemies() {
+  const scoutMesh = useRef<THREE.InstancedMesh>(null)
+  const gunshipMesh = useRef<THREE.InstancedMesh>(null)
+  const tankMesh = useRef<THREE.InstancedMesh>(null)
+  const turretMesh = useRef<THREE.InstancedMesh>(null)
+  const eBulletMesh = useRef<THREE.InstancedMesh>(null)
+  const setHeat = useGame((s) => s.setHeat)
+  const takeDamage = useGame((s) => s.takeDamage)
+  const registerKill = useGame((s) => s.registerKill)
+  const phase = useGame((s) => s.phase)
+  const level = useGame((s) => s.level)
+  const hitCooldown = useRef(0)
+  const elapsed = useRef(0)
+  const lastLevel = useRef(0)
+  const enemies = useRef<Enemy[]>([])
+  // Rebuild enemy list when level changes
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    elapsed.current += dt
+    if (phase !== 'playing' && phase !== 'level_complete') {
+      // Clear enemy bullets when not playing
+      for (let i = 0; i < ENEMY_BULLET_COUNT; i++) enemyBullets[i].active = false
+      return
+    }
+    // Respawn enemies when level changes
+    if (level !== lastLevel.current) {
+      lastLevel.current = level
+      enemies.current = []
+      const configs = getLevelEnemyConfig(level)
+      let id = 0
+      configs.forEach((cfg) => {
+        for (let i = 0; i < cfg.count; i++) {
+          const angle = (i / cfg.count) * Math.PI * 2 + Math.random()
+          const dist = 40 + Math.random() * 80
+          enemies.current.push({
+            id: id++,
+            type: cfg.type,
+            pos: new THREE.Vector3(
+              world.playerPos.x + Math.sin(angle) * dist,
+              8 + Math.random() * 30,
+              world.playerPos.z + Math.cos(angle) * dist
+            ),
+            vel: new THREE.Vector3(Math.sin(angle + 1) * 4, 0, Math.cos(angle + 1) * 4),
+            health: cfg.health,
+            maxHealth: cfg.health,
+            agitation: 0,
+            fireTimer: Math.random() * 2,
+            active: true,
+            speed: cfg.speed,
+            damage: cfg.damage,
+            fireRate: cfg.fireRate,
+            range: cfg.range,
+            score: cfg.score,
+            spawnOffset: new THREE.Vector3(Math.sin(angle) * dist, 8 + Math.random() * 30, Math.cos(angle) * dist),
+          })
+        }
+      })
+    }
+    const p = world.playerPos
+    playerV.set(p.x, p.y, p.z)
+    hitCooldown.current = Math.max(0, hitCooldown.current - dt)
+    let totalAgitation = 0
+    let activeCount = 0
+    const scoutM = scoutMesh.current
+    const gunshipM = gunshipMesh.current
+    const tankM = tankMesh.current
+    const turretM = turretMesh.current
+    const counts: Record<EnemyType, number> = { scout: 0, gunship: 0, tank: 0, turret: 0 }
+    for (let i = 0; i < enemies.current.length; i++) {
+      const e = enemies.current[i]
+      if (!e.active) continue
+      activeCount++
+      steer.set(0, 0, 0)
+      const pd = e.pos.distanceTo(playerV)
+      // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Agitation Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+      if (pd < e.range) {
+        e.agitation = Math.min(1, e.agitation + dt * 1.5)
+      } else {
+        e.agitation = Math.max(0, e.agitation - dt * 0.2)
+      }
+      // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Movement Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+      if (e.type !== 'turret') {
+        if (e.agitation > 0.3) {
+          // Chase player
+          diff.subVectors(playerV, e.pos).normalize().multiplyScalar(e.speed * e.agitation)
+          steer.add(diff)
+          // Maintain altitude near player
+          const targetY = p.y + (Math.sin(elapsed.current + i) * 4)
+          steer.y += (targetY - e.pos.y) * 2
+        } else {
+          // Patrol wander
+          const t = elapsed.current * 0.4 + i * 2.1
+          steer.x += Math.sin(t) * 2
+          steer.z += Math.cos(t * 0.8) * 2
+          steer.y += Math.sin(t * 0.5) * 1
+        }
+        // Altitude clamp
+        if (e.pos.y < 5) steer.y += 8
+        if (e.pos.y > 55) steer.y -= 8
+        // Separation from other enemies
+        for (let j = 0; j < enemies.current.length; j++) {
+          if (i === j || !enemies.current[j].active) continue
+          const distSq = e.pos.distanceToSquared(enemies.current[j].pos)
+          if (distSq < 64 && distSq > 0.01) {
+            diff.subVectors(e.pos, enemies.current[j].pos).normalize().multiplyScalar(8 / Math.sqrt(distSq))
+            steer.add(diff)
+          }
+        }
+        e.vel.addScaledVector(steer, dt)
+        const maxSpeed = e.speed * (0.5 + e.agitation * 0.8)
+        if (e.vel.length() > maxSpeed) e.vel.setLength(maxSpeed)
+        e.pos.addScaledVector(e.vel, dt)
+        // Wrap around player
+        if (e.pos.x - p.x > RANGE) e.pos.x -= RANGE * 2
+        if (e.pos.x - p.x < -RANGE) e.pos.x += RANGE * 2
+        if (e.pos.z - p.z > RANGE) e.pos.z -= RANGE * 2
+        if (e.pos.z - p.z < -RANGE) e.pos.z += RANGE * 2
+      } else {
+        // Turret: stationary, track player
+        e.agitation = pd < e.range ? 1 : 0
+      }
+      // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Shooting Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+      if (e.agitation > 0.4) {
+        e.fireTimer -= dt
+        if (e.fireTimer <= 0) {
+          e.fireTimer = 1 / e.fireRate + Math.random() * 0.3
+          const shootDir = diff.subVectors(playerV, e.pos).normalize()
+          // Add slight inaccuracy based on type
+          const spread = e.type === 'turret' ? 0.05 : e.type === 'tank' ? 0.1 : 0.2
+          shootDir.x += (Math.random() - 0.5) * spread
+          shootDir.y += (Math.random() - 0.5) * spread
+          shootDir.z += (Math.random() - 0.5) * spread
+          shootDir.normalize()
+          spawnEnemyBullet(e.pos, shootDir, e.damage)
+        }
+      }
+      // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Check player bullet hits Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+      for (let b = 0; b < bullets.length; b++) {
+        if (!bullets[b].active) continue
+        const bx = bullets[b].pos.x - e.pos.x
+        const by = bullets[b].pos.y - e.pos.y
+        const bz = bullets[b].pos.z - e.pos.z
+        const hitRadius = e.type === 'tank' ? 3.5 : e.type === 'gunship' ? 2.5 : 1.8
+        if (bx * bx + by * by + bz * bz < hitRadius * hitRadius) {
+          bullets[b].active = false
+          e.health -= bullets[b].damage
+          if (e.health <= 0) {
+            e.active = false
+            registerKill()
+          }
+        }
+      }
+      // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Render Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+      const colors = TYPE_COLORS[e.type]
+      const col = colorMix.lerpColors(colors.calm, colors.angry, e.agitation)
+      const idx = counts[e.type]
+      counts[e.type]++
+      dummy.position.copy(e.pos)
+      if (e.type !== 'turret') {
+        dummy.lookAt(e.pos.x + e.vel.x, e.pos.y + e.vel.y, e.pos.z + e.vel.z)
+      } else {
+        dummy.lookAt(p.x, p.y, p.z)
+      }
+      const healthRatio = e.health / e.maxHealth
+      let sx = 1, sy = 1, sz = 1
+      if (e.type === 'tank') { sx = 2.5; sy = 1.2; sz = 2.5 }
+      else if (e.type === 'gunship') { sx = 1.8; sy = 0.8; sz = 1.8 }
+      else if (e.type === 'turret') { sx = 1.5; sy = 2; sz = 1.5 }
+      else { sx = 0.8 + e.agitation * 0.3; sy = 0.8 + e.agitation * 0.3; sz = 0.8 + e.agitation * 0.3 }
+      dummy.scale.set(sx * healthRatio * 0.3 + sx * 0.7, sy, sz)
+      dummy.updateMatrix()
+      if (e.type === 'scout' && scoutM) {
+        scoutM.setMatrixAt(idx, dummy.matrix)
+        scoutM.setColorAt(idx, col)
+      } else if (e.type === 'gunship' && gunshipM) {
+        gunshipM.setMatrixAt(idx, dummy.matrix)
+        gunshipM.setColorAt(idx, col)
+      } else if (e.type === 'tank' && tankM) {
+        tankM.setMatrixAt(idx, dummy.matrix)
+        tankM.setColorAt(idx, col)
+      } else if (e.type === 'turret' && turretM) {
+        turretM.setMatrixAt(idx, dummy.matrix)
+        turretM.setColorAt(idx, col)
+      }
+      totalAgitation += e.agitation
+    }
+    // Update mesh counts
+    if (scoutM) { scoutM.count = counts.scout; scoutM.instanceMatrix.needsUpdate = true; if (scoutM.instanceColor) scoutM.instanceColor.needsUpdate = true }
+    if (gunshipM) { gunshipM.count = counts.gunship; gunshipM.instanceMatrix.needsUpdate = true; if (gunshipM.instanceColor) gunshipM.instanceColor.needsUpdate = true }
+    if (tankM) { tankM.count = counts.tank; tankM.instanceMatrix.needsUpdate = true; if (tankM.instanceColor) tankM.instanceColor.needsUpdate = true }
+    if (turretM) { turretM.count = counts.turret; turretM.instanceMatrix.needsUpdate = true; if (turretM.instanceColor) turretM.instanceColor.needsUpdate = true }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Enemy bullets Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const ebm = eBulletMesh.current
+    let activeBullets = 0
+    if (ebm) {
+      for (let i = 0; i < ENEMY_BULLET_COUNT; i++) {
+        let b = enemyBullets[i]
+        if (!b.active) continue
+        b.life -= dt
+        if (b.life <= 0) { b.active = false; continue }
+        b.pos.addScaledVector(b.vel, dt)
+        // Hit player
+        if (hitCooldown.current === 0) {
+          const dx = b.pos.x - p.x
+          const dy = b.pos.y - p.y
+          const dz = b.pos.z - p.z
+          if (dx * dx + dy * dy + dz * dz < 9) {
+            b.active = false
+            hitCooldown.current = 0.5
+            takeDamage(b.damage)
+            continue
+          }
+        }
+        eBulletDummy.position.copy(b.pos)
+        eBulletDummy.scale.setScalar(0.18)
+        eBulletDummy.updateMatrix()
+        ebm.setMatrixAt(activeBullets, eBulletDummy.matrix)
+        ebm.setColorAt(activeBullets, eBulletColor)
+        activeBullets++
+      }
+      ebm.count = activeBullets
+      ebm.instanceMatrix.needsUpdate = true
+      if (ebm.instanceColor) ebm.instanceColor.needsUpdate = true
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Heat Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const heat = activeCount > 0 ? totalAgitation / activeCount : 0
+    if (Math.abs(useGame.getState().heat - heat) > 0.04) setHeat(heat)
+  })
+  const maxCounts = useMemo(() => {
+    const configs = getLevelEnemyConfig(10) // max level for sizing
+    const c: Record<EnemyType, number> = { scout: 0, gunship: 0, tank: 0, turret: 0 }
+    configs.forEach(cfg => { c[cfg.type] = Math.max(c[cfg.type], cfg.count) })
+    return c
+  }, [])
+  return (
+    <>
+      {/* Scouts Ă˘â‚¬â€ť octahedron */}
+      <instancedMesh ref={scoutMesh} args={[undefined, undefined, 24]} frustumCulled={false}>
+        <octahedronGeometry args={[1, 0]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Gunships Ă˘â‚¬â€ť elongated box */}
+      <instancedMesh ref={gunshipMesh} args={[undefined, undefined, 14]} frustumCulled={false}>
+        <boxGeometry args={[1, 0.4, 2]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Tanks Ă˘â‚¬â€ť large box */}
+      <instancedMesh ref={tankMesh} args={[undefined, undefined, 8]} frustumCulled={false}>
+        <boxGeometry args={[1, 0.5, 1]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Turrets Ă˘â‚¬â€ť cylinder */}
+      <instancedMesh ref={turretMesh} args={[undefined, undefined, 10]} frustumCulled={false}>
+        <cylinderGeometry args={[0.6, 0.8, 1.5, 6]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Enemy bullets */}
+      <instancedMesh ref={eBulletMesh} args={[undefined, undefined, ENEMY_BULLET_COUNT]} frustumCulled={false}>
+        <sphereGeometry args={[1, 5, 5]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+    </>
+  )
+}
+
+game.tsx
+
+components/game/game.tsx
+
+Edited
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+39
+40
+41
+42
+43
+44
+45
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+import { City } from './city';
+import { Player } from './player';
+import { Drones } from './drones';
+import { Shards } from './shards';
+import { Hud } from './hud';
+import { MobileControls } from './mobile-controls';
+import { useGame } from '@/lib/game-store';
+function PostFX() {
+  const heat = useGame((s) => s?.heat)
+  return (
+    <EffectComposer>
+      <Bloom
+        intensity={1.4 + heat * 0.6}
+        luminanceThreshold={0.9}
+        mipmapBlur
+        luminanceSmoothing={0.3}
+      />
+      <Vignette darkness={0.65 + heat * 0.25} offset={0.25} />
+    </EffectComposer>
+  )
+}
+export default function Game() {
+  const started = useGame((s) => s?.started)
+  const gameOver = useGame((s) => s?.gameOver)
+  const showControls = started && !gameOver
+  return (
+    <div className="relative h-dvh w-full" style={{ background: ' #05030c' }}>
+        dpr={[1, 1.5]}
+      >
+        <color attach="background" args={[' #05030c']} />
+        <fog attach="fog" args={[' #05030c', 40, 220]} />
+        <ambientLight intensity={0.7} color=" #5560cc" />
+        <hemisphereLight args={[' #3a3a80', ' #12081f', 0.9]} />
+        <directionalLight position={[30, 60, -20]} intensity={1.4} color=" #8a70ff" />
+          sectionSize={56}
+          cellColor=" #1a1a3a"
+          sectionColor=" #00f0ff"
+          fadeDistance={220}
+          fadeStrength={2}
+          followCamera
+        />
+        <City />
+        <Shards />
+        <Drones />
+        <Player />
+        <PostFX />
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+41
+42
+43
+44
+45
+46
+47
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+import { Drones } from './drones';
+import { Shards } from './shards';
+        intensity={1.4 + heat * 0.6}
+        luminanceThreshold={0.9}
+      <Vignette darkness={0.65 + heat * 0.25} offset={0.25} />
+  const started = useGame((s) => s?.started)
+  const gameOver = useGame((s) => s?.gameOver)
+  const showControls = started && !gameOver
+        <fog attach="fog" args={['#05030c', 40, 220]} />
+          fadeDistance={220}
+        <Shards />
+        <Drones />
+import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+import { City } from './city';
+import { Player } from './player';
+import { Enemies } from './drones';
+import { MedPacksAndPortal } from './shards';
+import { Hud } from './hud';
+import { MobileControls } from './mobile-controls';
+import { useGame } from '@/lib/game-store';
+function PostFX() {
+  const heat = useGame((s) => s?.heat)
+  const health = useGame((s) => s?.health)
+  const maxHealth = useGame((s) => s?.maxHealth)
+  const healthRatio = maxHealth > 0 ? health / maxHealth : 1
+  return (
+    <EffectComposer>
+      <Bloom
+        intensity={1.4 + heat * 0.8 + (1 - healthRatio) * 0.4}
+        luminanceThreshold={0.85}
+        mipmapBlur
+        luminanceSmoothing={0.3}
+      />
+      <Vignette darkness={0.65 + heat * 0.25 + (1 - healthRatio) * 0.2} offset={0.25} />
+    </EffectComposer>
+  )
+}
+export default function Game() {
+  const phase = useGame((s) => s?.phase)
+  const showControls = phase === 'playing'
+  return (
+    <div className="relative h-dvh w-full" style={{ background: ' #05030c' }}>
+        dpr={[1, 1.5]}
+      >
+        <color attach="background" args={[' #05030c']} />
+        <fog attach="fog" args={[' #05030c', 40, 240]} />
+        <ambientLight intensity={0.7} color=" #5560cc" />
+        <hemisphereLight args={[' #3a3a80', ' #12081f', 0.9]} />
+        <directionalLight position={[30, 60, -20]} intensity={1.4} color=" #8a70ff" />
+          sectionSize={56}
+          cellColor=" #1a1a3a"
+          sectionColor=" #00f0ff"
+          fadeDistance={240}
+          fadeStrength={2}
+          followCamera
+        />
+        <City />
+        <MedPacksAndPortal />
+        <Enemies />
+        <Player />
+        <PostFX />
+3 hidden lines
+3 hidden lines
+5 hidden lines
+7 hidden lines
+
+
+
+
+
+hud.tsx
+
+components/game/hud.tsx
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+107
+108
+109
+110
+111
+112
+113
+114
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import { useGame } from '@/lib/game-store';
+export function Hud() {
+  const shards = useGame((s) => s?.shards)
+  const best = useGame((s) => s?.best)
+  const heat = useGame((s) => s?.heat)
+  const speed = useGame((s) => s?.speed)
+  const sector = useGame((s) => s?.sector)
+  const started = useGame((s) => s?.started)
+  const gameOver = useGame((s) => s?.gameOver)
+  const combo = useGame((s) => s?.combo)
+  const hitFlash = useGame((s) => s?.hitFlash)
+  const start = useGame((s) => s?.start)
+  const restart = useGame((s) => s?.restart)
+  const [flashOpacity, setFlashOpacity] = useState(0)
+  const [comboAnim, setComboAnim] = useState(false)
+  const prevCombo = useRef(0)
+  const prevFlash = useRef(0)
+  // Hit flash effect
+  useEffect(() => {
+    if (hitFlash && hitFlash !== prevFlash?.current) {
+      prevFlash.current = hitFlash
+      setFlashOpacity(0.7)
+      const t = setTimeout(() => setFlashOpacity(0), 400)
+      return () => clearTimeout(t)
+    }
+  }, [hitFlash])
+  // Combo pop animation
+  useEffect(() => {
+    if (combo > prevCombo?.current && combo > 0) {
+      setComboAnim(true)
+      const t = setTimeout(() => setComboAnim(false), 300)
+      prevCombo.current = combo
+      return () => clearTimeout(t)
+    }
+    prevCombo.current = combo
+  }, [combo])
+  if (!started) {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-8 bg-[#05030c]/90 p-6 text-center font-mono overflow-hidden">
+        {/* Animated scan lines */}
+        <div className="pointer-events-none absolute inset-0 opacity-10"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px,  rgba(0,240,255,0.15) 2px,  rgba(0,240,255,0.15) 4px)' }}
+        />
+          JACK IN
+        </button>
+        {/* Glitch title */}
+        <div className="relative">
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#00f0ff] drop-shadow-[0_0_20px_#00f0ff]">
+            SIGNAL
+          </h1>
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#ff2d95] drop-shadow-[0_0_20px_#ff2d95] -mt-1">
+            //RUNNER
+          </h1>
+          <div className="mt-3 h-px w-full bg-gradient-to-r from-transparent via-[#00f0ff] to-transparent" />
+        </div>
+        <p className="max-w-xs text-xs text-[#8888aa] leading-relaxed">
+          An infinite generated city. Harvest data shards.
+          <br />
+          The more you carry, the louder your signal Ă˘â‚¬â€ť
+          <br />
+          <span className="text-[#ff2d95]">and the swarm is listening.</span>
+        </p>
+        <div className="border border-[#00f0ff]/30 bg-[#00f0ff]/5 p-4 text-xs text-[#8888aa] leading-7 w-56">
+          <p><span className="text-[#00f0ff]">A / D</span> &nbsp;Ă‚Â·&nbsp; steer</p>
+          <p><span className="text-[#00f0ff]">W / S</span> &nbsp;Ă‚Â·&nbsp; climb / dive</p>
+          <p><span className="text-[#00f0ff]">SHIFT</span> &nbsp;Ă‚Â·&nbsp; boost</p>
+          <p><span className="text-[#ff2d95]">SHARDS</span> &nbsp;Ă‚Â·&nbsp; collect to score</p>
+          <div className="mt-2 border-t border-[#00f0ff]/20 pt-2">
+            <p className="text-[9px] text-[#00f0ff]/50 tracking-widest mb-1">MOBILE</p>
+            <p><span className="text-[#00f0ff]">JOYSTICK</span> &nbsp;Ă‚Â·&nbsp; steer &amp; climb</p>
+            <p><span className="text-[#ff2d95]">BOOST</span> &nbsp;Ă‚Â·&nbsp; right button</p>
+          </div>
+        </div>
+        {best > 0 && (
+          <p className="text-xs text-[#ffb300] tracking-widest">
+            BEST RUN: {best} SHARDS
+          </p>
+        )}
+      </div>
+    )
+  }
+  if (gameOver) {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#05030c]/95 p-6 text-center font-mono">
+        <div className="pointer-events-none absolute inset-0 opacity-10"
+        </h2>
+        <div className="h-px w-48 bg-gradient-to-r from-transparent via-[#ff2d95] to-transparent" />
+        <div className="text-xs text-[#8888aa] leading-8">
+          <p>SHARDS COLLECTED <span className="text-[#00f0ff] text-lg ml-2">{shards}</span></p>
+          <p>BEST RUN <span className="text-[#ffb300] text-lg ml-2">{best}</span></p>
+        </div>
+        <button
+          onClick={restart}
+      </div>
+    )
+  }
+  return (
+    <>
+      {/* Hit flash overlay */}
+      <div
+        className="pointer-events-none absolute inset-0 z-20 transition-opacity duration-300"
+        style={{ background: 'radial-gradient(ellipse at center, transparent 30%,  #ff2d95 100%)', opacity: flashOpacity }}
+      />
+      <div className="pointer-events-none absolute inset-0 z-10 font-mono text-xs">
+        {/* Scan line overlay */}
+        <div className="absolute inset-0 opacity-[0.04]"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 3px,  rgba(0,240,255,0.5) 3px,  rgba(0,240,255,0.5) 4px)' }}
+        />
+          <div>
+            <p className="text-[9px] text-[#8888aa] tracking-widest">SECTOR</p>
+            <p className="tracking-widest text-[#00f0ff] text-sm">{sector || 'Ă˘â‚¬â€ť'}</p>
+          </div>
+          {/* Center Ă˘â‚¬â€ť combo */}
+          {combo >= 3 && (
+            <div
+              className="absolute left-1/2 top-3 -translate-x-1/2 text-center transition-transform duration-150"
+              style={{ transform: `translateX(-50%) scale(${comboAnim ? 1.3 : 1})` }}
+            >
+              <p className="text-[9px] text-[#ffb300] tracking-widest">COMBO</p>
+              <p className="text-xl font-bold text-[#ffb300] drop-shadow-[0_0_10px_#ffb300]">
+                x{combo}
+              </p>
+            </div>
+          )}
+          <div className="text-right">
+            <p className="text-[9px] text-[#8888aa] tracking-widest">SHARDS</p>
+            <p
+              className="text-2xl leading-none font-bold text-[#00f0ff] drop-shadow-[0_0_8px_#00f0ff] transition-transform duration-100"
+              style={{ transform: comboAnim ? 'scale(1.15)' : 'scale(1)' }}
+            >
+              {shards}
+            </p>
+            <p className="mt-1 text-[9px] text-[#8888aa]">BEST {best}</p>
+          </div>
+        </div>
+        {/* Bottom bar */}
+        <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-3">
+          <div>
+            <p className="text-[9px] text-[#8888aa] tracking-widest">VELOCITY</p>
+            <p className="text-[#00f0ff]">{speed}</p>
+          </div>
+          {/* Heat bar */}
+          <div className="w-36">
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-[9px] text-[#8888aa] tracking-widest">SWARM HEAT</p>
+              {heat > 0.5 && (
+                <p className="text-[9px] text-[#ff2d95] animate-pulse tracking-widest">!! HUNTED !!</p>
+              )}
+            </div>
+            <div className="h-2 w-full border border-[#00f0ff]/30 bg-[#05030c]">
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${Math.round(heat * 100)}%`,
+                  background: heat > 0.75
+                    ? ' #ff2d95'
+                    : heat > 0.5
+                    ? `linear-gradient(90deg,  #00f0ff,  #ff2d95)`
+                    : ' #00f0ff',
+                  boxShadow: heat > 0.5 ? `0 0 8px ${heat > 0.75 ? ' #ff2d95' : ' #00f0ff'}` : 'none',
+                }}
+              />
+            </div>
+            {/* Heat tick marks */}
+            <div className="mt-0.5 flex justify-between">
+              {[0, 1, 2, 3, 4]?.map((i) => (
+                <div key={i} className="h-1 w-px bg-[#00f0ff]/20" />
+              ))}
+            </div>
+          </div>
+        </div>
+        {/* Corner decorations */}
+        <div className="absolute top-0 left-0 h-6 w-6 border-l-2 border-t-2 border-[#00f0ff]/40" />
+        <div className="absolute top-0 right-0 h-6 w-6 border-r-2 border-t-2 border-[#00f0ff]/40" />
+        <div className="absolute bottom-0 left-0 h-6 w-6 border-l-2 border-b-2 border-[#00f0ff]/40" />
+        <div className="absolute bottom-0 right-0 h-6 w-6 border-r-2 border-b-2 border-[#00f0ff]/40" />
+      </div>
+    </>
+  );
+}
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+163
+164
+165
+166
+167
+168
+169
+170
+171
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+244
+245
+246
+247
+248
+249
+250
+251
+252
+253
+254
+255
+256
+257
+258
+259
+260
+261
+262
+263
+264
+265
+266
+267
+268
+269
+270
+271
+272
+273
+274
+275
+276
+277
+278
+279
+280
+281
+282
+283
+284
+285
+286
+287
+288
+289
+290
+291
+292
+293
+294
+295
+296
+297
+298
+299
+300
+301
+302
+303
+304
+305
+306
+307
+308
+309
+310
+311
+312
+313
+314
+315
+316
+317
+318
+  const shards = useGame((s) => s?.shards)
+  const started = useGame((s) => s?.started)
+  const gameOver = useGame((s) => s?.gameOver)
+  const combo = useGame((s) => s?.combo)
+  const [comboAnim, setComboAnim] = useState(false)
+  const prevCombo = useRef(0)
+  // Hit flash effect
+      setFlashOpacity(0.7)
+  // Combo pop animation
+    if (combo > prevCombo?.current && combo > 0) {
+      setComboAnim(true)
+      const t = setTimeout(() => setComboAnim(false), 300)
+      prevCombo.current = combo
+    prevCombo.current = combo
+  }, [combo])
+  if (!started) {
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-8 bg-[#05030c]/90 p-6 text-center font-mono overflow-hidden">
+        {/* Animated scan lines */}
+        {/* Glitch title */}
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#00f0ff] drop-shadow-[0_0_20px_#00f0ff]">
+            SIGNAL
+          </h1>
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#ff2d95] drop-shadow-[0_0_20px_#ff2d95] -mt-1">
+            //RUNNER
+          </h1>
+          An infinite generated city. Harvest data shards.
+          <br />
+          The more you carry, the louder your signal Ă˘â‚¬â€ť
+          <br />
+          <span className="text-[#ff2d95]">and the swarm is listening.</span>
+        <div className="border border-[#00f0ff]/30 bg-[#00f0ff]/5 p-4 text-xs text-[#8888aa] leading-7 w-56">
+          <p><span className="text-[#ff2d95]">SHARDS</span> &nbsp;Ă‚Â·&nbsp; collect to score</p>
+          <p className="text-xs text-[#ffb300] tracking-widest">
+            BEST RUN: {best} SHARDS
+          </p>
+  if (gameOver) {
+          <p>SHARDS COLLECTED <span className="text-[#00f0ff] text-lg ml-2">{shards}</span></p>
+          <p>BEST RUN <span className="text-[#ffb300] text-lg ml-2">{best}</span></p>
+        style={{ background: 'radial-gradient(ellipse at center, transparent 30%, #ff2d95 100%)', opacity: flashOpacity }}
+        {/* Scan line overlay */}
+          {/* Center Ă˘â‚¬â€ť combo */}
+          {combo >= 3 && (
+            <div
+              className="absolute left-1/2 top-3 -translate-x-1/2 text-center transition-transform duration-150"
+              style={{ transform: `translateX(-50%) scale(${comboAnim ? 1.3 : 1})` }}
+            >
+              <p className="text-[9px] text-[#ffb300] tracking-widest">COMBO</p>
+              <p className="text-xl font-bold text-[#ffb300] drop-shadow-[0_0_10px_#ffb300]">
+                x{combo}
+              </p>
+          )}
+            <p className="text-[9px] text-[#8888aa] tracking-widest">SHARDS</p>
+            <p
+              className="text-2xl leading-none font-bold text-[#00f0ff] drop-shadow-[0_0_8px_#00f0ff] transition-transform duration-100"
+              style={{ transform: comboAnim ? 'scale(1.15)' : 'scale(1)' }}
+            >
+              {shards}
+            </p>
+        <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-3">
+          <div>
+            <p className="text-[9px] text-[#8888aa] tracking-widest">VELOCITY</p>
+            <p className="text-[#00f0ff]">{speed}</p>
+          <div className="w-36">
+              <p className="text-[9px] text-[#8888aa] tracking-widest">SWARM HEAT</p>
+                <p className="text-[9px] text-[#ff2d95] animate-pulse tracking-widest">!! HUNTED !!</p>
+            <div className="h-2 w-full border border-[#00f0ff]/30 bg-[#05030c]">
+                  background: heat > 0.75
+                    ? '#ff2d95'
+                    : heat > 0.5
+                    ? `linear-gradient(90deg, #00f0ff, #ff2d95)`
+                    : '#00f0ff',
+            {/* Heat tick marks */}
+            <div className="mt-0.5 flex justify-between">
+              {[0, 1, 2, 3, 4]?.map((i) => (
+                <div key={i} className="h-1 w-px bg-[#00f0ff]/20" />
+              ))}
+            </div>
+  );
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import { useGame } from '@/lib/game-store';
+export function Hud() {
+  const phase = useGame((s) => s?.phase)
+  const score = useGame((s) => s?.score)
+  const best = useGame((s) => s?.best)
+  const level = useGame((s) => s?.level)
+  const heat = useGame((s) => s?.heat)
+  const speed = useGame((s) => s?.speed)
+  const sector = useGame((s) => s?.sector)
+  const health = useGame((s) => s?.health)
+  const maxHealth = useGame((s) => s?.maxHealth)
+  const ammo = useGame((s) => s?.ammo)
+  const maxAmmo = useGame((s) => s?.maxAmmo)
+  const kills = useGame((s) => s?.kills)
+  const levelKillTarget = useGame((s) => s?.levelKillTarget)
+  const hitFlash = useGame((s) => s?.hitFlash)
+  const start = useGame((s) => s?.start)
+  const restart = useGame((s) => s?.restart)
+  const beginPlaying = useGame((s) => s?.beginPlaying)
+  const nextLevel = useGame((s) => s?.nextLevel)
+  const [flashOpacity, setFlashOpacity] = useState(0)
+  const [healFlash, setHealFlash] = useState(false)
+  const prevFlash = useRef(0)
+  const prevHealth = useRef(100)
+  useEffect(() => {
+    if (hitFlash && hitFlash !== prevFlash?.current) {
+      prevFlash.current = hitFlash
+      setFlashOpacity(0.75)
+      const t = setTimeout(() => setFlashOpacity(0), 400)
+      return () => clearTimeout(t)
+    }
+  }, [hitFlash])
+  useEffect(() => {
+    if (health > prevHealth?.current) {
+      setHealFlash(true)
+      const t = setTimeout(() => setHealFlash(false), 500)
+      prevHealth.current = health
+      return () => clearTimeout(t)
+    }
+    prevHealth.current = health
+  }, [health])
+  // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ MENU Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+  if (phase === 'menu') {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#05030c]/92 p-6 text-center font-mono overflow-hidden">
+        <div className="pointer-events-none absolute inset-0 opacity-10"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px,  rgba(0,240,255,0.15) 2px,  rgba(0,240,255,0.15) 4px)' }}
+        />
+          JACK IN
+        </button>
+        <div className="relative">
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#00f0ff] drop-shadow-[0_0_20px_#00f0ff]">NEON</h1>
+          <h1 className="text-5xl font-bold tracking-[0.2em] text-[#ff2d95] drop-shadow-[0_0_20px_#ff2d95] -mt-1">//SHIFT</h1>
+          <div className="mt-3 h-px w-full bg-gradient-to-r from-transparent via-[#00f0ff] to-transparent" />
+        </div>
+        <p className="max-w-xs text-xs text-[#8888aa] leading-relaxed">
+          Survive the cyberpunk gauntlet.<br />
+          Destroy enemies to advance levels.<br />
+          <span className="text-[#ffb300]">Reach the portal</span> to complete each level.<br />
+          <span className="text-[#00ff88]">Green crosses</span> restore health.
+        </p>
+        <div className="border border-[#00f0ff]/30 bg-[#00f0ff]/5 p-4 text-xs text-[#8888aa] leading-7 w-60">
+          <p><span className="text-[#00f0ff]">A / D</span> &nbsp;Ă‚Â·&nbsp; steer</p>
+          <p><span className="text-[#00f0ff]">W / S</span> &nbsp;Ă‚Â·&nbsp; climb / dive</p>
+          <p><span className="text-[#00f0ff]">SHIFT</span> &nbsp;Ă‚Â·&nbsp; boost</p>
+          <p><span className="text-[#ff2d95]">SPACE / F / CTRL</span> &nbsp;Ă‚Â·&nbsp; shoot</p>
+          <div className="mt-2 border-t border-[#00f0ff]/20 pt-2">
+            <p className="text-[9px] text-[#00f0ff]/50 tracking-widest mb-1">MOBILE</p>
+            <p><span className="text-[#00f0ff]">JOYSTICK</span> &nbsp;Ă‚Â·&nbsp; steer &amp; climb</p>
+            <p><span className="text-[#ff2d95]">BOOST</span> &nbsp;Ă‚Â·&nbsp; right button</p>
+            <p><span className="text-[#ffb300]">FIRE</span> &nbsp;Ă‚Â·&nbsp; shoot button</p>
+          </div>
+        </div>
+        {best > 0 && (
+          <p className="text-xs text-[#ffb300] tracking-widest">BEST SCORE: {best}</p>
+        )}
+      </div>
+    )
+  }
+  // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ LEVEL START Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+  if (phase === 'level_start') {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#05030c]/88 p-6 text-center font-mono">
+        <div className="pointer-events-none absolute inset-0 opacity-8"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px,  rgba(0,240,255,0.12) 2px,  rgba(0,240,255,0.12) 4px)' }}
+        />
+        <p className="text-[10px] text-[#8888aa] tracking-[0.5em]">INCOMING TRANSMISSION</p>
+        <h2 className="text-6xl font-bold tracking-[0.3em] text-[#00f0ff] drop-shadow-[0_0_30px_#00f0ff]">
+          LEVEL {level}
+        </h2>
+        <div className="h-px w-48 bg-gradient-to-r from-transparent via-[#00f0ff] to-transparent" />
+        <div className="text-xs text-[#8888aa] leading-8">
+          <p>OBJECTIVE: <span className="text-[#ff2d95]">ELIMINATE {levelKillTarget} ENEMIES</span></p>
+          <p>THEN REACH THE <span className="text-[#ffb300]">GOLDEN PORTAL</span></p>
+          {level >= 2 && <p className="text-[#ff2d95] animate-pulse">Ă˘Ĺˇ  GUNSHIPS DEPLOYED</p>}
+          {level >= 3 && <p className="text-[#ff2d95] animate-pulse">Ă˘Ĺˇ  HEAVY TANKS ACTIVE</p>}
+          {level >= 4 && <p className="text-[#ff2d95] animate-pulse">Ă˘Ĺˇ  TURRET GRID ONLINE</p>}
+        </div>
+        <button
+          onClick={beginPlaying}
+          className="border border-[#00f0ff] bg-[#00f0ff]/10 px-10 py-3 text-sm tracking-[0.4em] text-[#00f0ff] transition-all duration-200 hover:bg-[#00f0ff] hover:text-[#05030c] hover:shadow-[0_0_30px_#00f0ff] active:scale-95"
+        >
+          ENGAGE
+        </button>
+      </div>
+    )
+  }
+  // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ LEVEL COMPLETE Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+  if (phase === 'level_complete') {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#05030c]/90 p-6 text-center font-mono">
+        <div className="pointer-events-none absolute inset-0 opacity-8"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 2px,  rgba(255,179,0,0.12) 2px,  rgba(255,179,0,0.12) 4px)' }}
+        />
+        <p className="text-[10px] text-[#8888aa] tracking-[0.5em]">SECTOR CLEARED</p>
+        <h2 className="text-5xl font-bold tracking-[0.3em] text-[#ffb300] drop-shadow-[0_0_30px_#ffb300]">
+          LEVEL {level}
+        </h2>
+        <p className="text-lg text-[#ffb300]">COMPLETE</p>
+        <div className="h-px w-48 bg-gradient-to-r from-transparent via-[#ffb300] to-transparent" />
+        <div className="text-xs text-[#8888aa] leading-8">
+          <p>ENEMIES ELIMINATED <span className="text-[#00f0ff] text-lg ml-2">{kills}</span></p>
+          <p>SCORE <span className="text-[#ffb300] text-lg ml-2">{score}</span></p>
+        </div>
+        <p className="text-xs text-[#00ff88] animate-pulse">Ă˘â€ â€™ REACH THE PORTAL TO ADVANCE Ă˘â€ Â</p>
+        <button
+          onClick={nextLevel}
+          className="border border-[#ffb300] bg-[#ffb300]/10 px-10 py-3 text-sm tracking-[0.4em] text-[#ffb300] transition-all duration-200 hover:bg-[#ffb300] hover:text-[#05030c] hover:shadow-[0_0_30px_#ffb300] active:scale-95"
+        >
+          NEXT LEVEL
+        </button>
+      </div>
+    )
+  }
+  // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ GAME OVER Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+  if (phase === 'game_over') {
+    return (
+      <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6 bg-[#05030c]/95 p-6 text-center font-mono">
+        <div className="pointer-events-none absolute inset-0 opacity-10"
+        </h2>
+        <div className="h-px w-48 bg-gradient-to-r from-transparent via-[#ff2d95] to-transparent" />
+        <div className="text-xs text-[#8888aa] leading-8">
+          <p>LEVEL REACHED <span className="text-[#00f0ff] text-lg ml-2">{level}</span></p>
+          <p>FINAL SCORE <span className="text-[#ffb300] text-lg ml-2">{score}</span></p>
+          <p>BEST SCORE <span className="text-[#ffb300] text-lg ml-2">{best}</span></p>
+        </div>
+        <button
+          onClick={restart}
+      </div>
+    )
+  }
+  // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ PLAYING HUD Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+  const healthPct = Math.max(0, (health / maxHealth) * 100)
+  const ammoPct = maxAmmo > 0 ? (ammo / maxAmmo) * 100 : 0
+  const killsPct = levelKillTarget > 0 ? Math.min(1, kills / levelKillTarget) * 100 : 0
+  return (
+    <>
+      {/* Hit flash overlay */}
+      <div
+        className="pointer-events-none absolute inset-0 z-20 transition-opacity duration-300"
+        style={{
+          background: healFlash
+            ? 'radial-gradient(ellipse at center, transparent 30%,  #00ff88 100%)'
+            : 'radial-gradient(ellipse at center, transparent 30%,  #ff2d95 100%)',
+          opacity: healFlash ? 0.3 : flashOpacity
+        }}
+      />
+      <div className="pointer-events-none absolute inset-0 z-10 font-mono text-xs">
+        {/* Scan lines */}
+        <div className="absolute inset-0 opacity-[0.04]"
+          style={{ backgroundImage: 'repeating-linear-gradient(0deg, transparent, transparent 3px,  rgba(0,240,255,0.5) 3px,  rgba(0,240,255,0.5) 4px)' }}
+        />
+          <div>
+            <p className="text-[9px] text-[#8888aa] tracking-widest">SECTOR</p>
+            <p className="tracking-widest text-[#00f0ff] text-sm">{sector || 'Ă˘â‚¬â€ť'}</p>
+            <p className="text-[9px] text-[#8888aa] mt-1 tracking-widest">VEL {speed}</p>
+          </div>
+          {/* Center Ă˘â‚¬â€ť level + kill progress */}
+          <div className="absolute left-1/2 top-3 -translate-x-1/2 text-center">
+            <p className="text-[9px] text-[#8888aa] tracking-widest">LEVEL</p>
+            <p className="text-xl font-bold text-[#00f0ff] drop-shadow-[0_0_10px_#00f0ff]">{level}</p>
+            <p className="text-[9px] text-[#8888aa] tracking-widest mt-0.5">KILLS {kills}/{levelKillTarget}</p>
+            {/* Kill progress bar */}
+            <div className="mt-1 h-1 w-24 border border-[#ff2d95]/30 bg-[#05030c]">
+              <div
+                className="h-full transition-all duration-300"
+                style={{ width: `${killsPct}%`, background: ' #ff2d95', boxShadow: '0 0 6px  #ff2d95' }}
+              />
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-[9px] text-[#8888aa] tracking-widest">SCORE</p>
+            <p className="text-2xl leading-none font-bold text-[#ffb300] drop-shadow-[0_0_8px_#ffb300]">{score}</p>
+            <p className="mt-1 text-[9px] text-[#8888aa]">BEST {best}</p>
+          </div>
+        </div>
+        {/* Bottom bar */}
+        <div className="absolute bottom-0 left-0 right-0 flex items-end justify-between p-3 gap-3">
+          {/* Health bar */}
+          <div className="flex-1 max-w-[140px]">
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-[9px] text-[#8888aa] tracking-widest">HEALTH</p>
+              <p className="text-[9px]" style={{ color: healthPct > 50 ? ' #00ff88' : healthPct > 25 ? ' #ffb300' : ' #ff2d95' }}>
+                {Math.round(health)}/{maxHealth}
+              </p>
+            </div>
+            <div className="h-2.5 w-full border border-[#00ff88]/30 bg-[#05030c]">
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${healthPct}%`,
+                  background: healthPct > 50 ? ' #00ff88' : healthPct > 25 ? ' #ffb300' : ' #ff2d95',
+                  boxShadow: `0 0 8px ${healthPct > 50 ? ' #00ff88' : healthPct > 25 ? ' #ffb300' : ' #ff2d95'}`,
+                }}
+              />
+            </div>
+            {healthPct <= 25 && (
+              <p className="text-[9px] text-[#ff2d95] animate-pulse tracking-widest mt-0.5">!! CRITICAL !!</p>
+            )}
+          </div>
+          {/* Ammo bar */}
+          <div className="flex-1 max-w-[120px]">
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-[9px] text-[#8888aa] tracking-widest">AMMO</p>
+              <p className="text-[9px] text-[#ffb300]">{ammo}/{maxAmmo}</p>
+            </div>
+            <div className="h-2.5 w-full border border-[#ffb300]/30 bg-[#05030c]">
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${ammoPct}%`,
+                  background: ammoPct > 30 ? ' #ffb300' : ' #ff2d95',
+                  boxShadow: `0 0 6px ${ammoPct > 30 ? ' #ffb300' : ' #ff2d95'}`,
+                }}
+              />
+            </div>
+            {ammo === 0 && (
+              <p className="text-[9px] text-[#ff2d95] animate-pulse tracking-widest mt-0.5">NO AMMO</p>
+            )}
+          </div>
+          {/* Heat bar */}
+          <div className="flex-1 max-w-[120px]">
+            <div className="mb-1 flex items-center justify-between">
+              <p className="text-[9px] text-[#8888aa] tracking-widest">THREAT</p>
+              {heat > 0.5 && (
+                <p className="text-[9px] text-[#ff2d95] animate-pulse tracking-widest">HOT</p>
+              )}
+            </div>
+            <div className="h-2.5 w-full border border-[#00f0ff]/30 bg-[#05030c]">
+              <div
+                className="h-full transition-all duration-300"
+                style={{
+                  width: `${Math.round(heat * 100)}%`,
+                  background: heat > 0.75 ? ' #ff2d95' : heat > 0.5 ? 'linear-gradient(90deg,  #00f0ff,  #ff2d95)' : ' #00f0ff',
+                  boxShadow: heat > 0.5 ? `0 0 8px ${heat > 0.75 ? ' #ff2d95' : ' #00f0ff'}` : 'none',
+                }}
+              />
+            </div>
+          </div>
+        </div>
+        {/* Corner decorations */}
+        <div className="absolute top-0 left-0 h-6 w-6 border-l-2 border-t-2 border-[#00f0ff]/40" />
+        <div className="absolute top-0 right-0 h-6 w-6 border-r-2 border-t-2 border-[#00f0ff]/40" />
+        <div className="absolute bottom-0 left-0 h-6 w-6 border-l-2 border-b-2 border-[#00f0ff]/40" />
+        <div className="absolute bottom-0 right-0 h-6 w-6 border-r-2 border-b-2 border-[#00f0ff]/40" />
+        {/* Portal hint */}
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 text-center">
+          {kills >= levelKillTarget && (
+            <p className="text-[10px] text-[#ffb300] animate-pulse tracking-widest drop-shadow-[0_0_8px_#ffb300]">
+              Ă˘Ëśâ€¦ FIND THE GOLDEN PORTAL Ă˘Ëśâ€¦
+            </p>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+5 hidden lines
+4 hidden lines
+4 hidden lines
+3 hidden lines
+
+mobile-controls.tsx
+
+components/game/mobile-controls.tsx
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+'use client';
+import { useEffect, useRef, useCallback } from 'react';
+import { mobileInput } from '@/lib/game-store';
+const DEAD_ZONE = 0.12;
+const JOYSTICK_RADIUS = 52; // px Ă˘â‚¬â€ť outer ring radius
+export function MobileControls() {
+  const outerRef = useRef<HTMLDivElement>(null);
+    };
+  }, [resetKnob]);
+  // Boost button handlers
+  const onBoostStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.boost = true;
+  }, []);
+  const onBoostEnd = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.boost = false;
+  }, []);
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30 select-none">
+      {/* Left Ă˘â‚¬â€ť Joystick */}
+      <div
+        className="pointer-events-auto absolute bottom-20 left-8"
+        style={{ width: JOYSTICK_RADIUS * 2, height: JOYSTICK_RADIUS * 2 }}
+      >
+        {/* Outer ring */}
+        <div
+          ref={outerRef}
+          className="absolute inset-0 rounded-full"
+            boxShadow: '0 0 18px  rgba(0,240,255,0.18)',
+          }}
+        />
+        {/* Inner cross guides */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div style={{ width: '100%', height: 1, background: ' rgba(0,240,255,0.15)' }} />
+        </div>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div style={{ width: 1, height: '100%', background: ' rgba(0,240,255,0.15)' }} />
+        </div>
+        {/* Knob */}
+        <div
+          ref={knobRef}
+          className="pointer-events-none absolute rounded-full"
+          style={{
+            width: 44,
+            height: 44,
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'radial-gradient(circle at 35% 35%,  rgba(0,240,255,0.7),  rgba(0,240,255,0.2))',
+            border: '2px solid  rgba(0,240,255,0.8)',
+            boxShadow: '0 0 14px  rgba(0,240,255,0.6)',
+            transition: 'none',
+          }}
+        />
+        {/* Direction labels */}
+        <div className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">UP</div>
+        <div className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">DN</div>
+        <div className="pointer-events-none absolute top-1/2 -left-6 -translate-y-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">L</div>
+        <div className="pointer-events-none absolute top-1/2 -right-6 -translate-y-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">R</div>
+      </div>
+      {/* Right Ă˘â‚¬â€ť Boost button */}
+      <div
+        className="pointer-events-auto absolute bottom-20 right-8 flex flex-col items-center gap-2"
+      >
+        <button
+          onTouchStart={onBoostStart}
+          onTouchEnd={onBoostEnd}
+          onTouchCancel={onBoostEnd}
+          className="flex items-center justify-center rounded-full font-mono text-xs tracking-widest active:scale-95"
+          style={{
+            width: 80,
+            height: 80,
+            background: 'radial-gradient(circle at 35% 35%,  rgba(255,45,149,0.4),  rgba(255,45,149,0.1))',
+            border: '2px solid  rgba(255,45,149,0.7)',
+            boxShadow: '0 0 20px  rgba(255,45,149,0.35)',
+1
+2
+3
+4
+5
+6
+7
+8
+9
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+const JOYSTICK_RADIUS = 52; // px Ă˘â‚¬â€ť outer ring radius
+  // Boost button handlers
+        {/* Outer ring */}
+        {/* Inner cross guides */}
+        {/* Knob */}
+            width: 44,
+            height: 44,
+            top: '50%',
+            left: '50%',
+        {/* Direction labels */}
+      {/* Right Ă˘â‚¬â€ť Boost button */}
+      <div
+        className="pointer-events-auto absolute bottom-20 right-8 flex flex-col items-center gap-2"
+      >
+            width: 80,
+            height: 80,
+'use client';
+import { useEffect, useRef, useCallback } from 'react';
+import { mobileInput } from '@/lib/game-store';
+const DEAD_ZONE = 0.12;
+const JOYSTICK_RADIUS = 52;
+export function MobileControls() {
+  const outerRef = useRef<HTMLDivElement>(null);
+    };
+  }, [resetKnob]);
+  const onBoostStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.boost = true;
+  }, []);
+  const onBoostEnd = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.boost = false;
+  }, []);
+  const onShootStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.shoot = true;
+  }, []);
+  const onShootEnd = useCallback((e: React.TouchEvent) => {
+    e.preventDefault();
+    mobileInput.shoot = false;
+  }, []);
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30 select-none">
+      {/* Left Ă˘â‚¬â€ť Joystick */}
+      <div
+        className="pointer-events-auto absolute bottom-20 left-8"
+        style={{ width: JOYSTICK_RADIUS * 2, height: JOYSTICK_RADIUS * 2 }}
+      >
+        <div
+          ref={outerRef}
+          className="absolute inset-0 rounded-full"
+            boxShadow: '0 0 18px  rgba(0,240,255,0.18)',
+          }}
+        />
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div style={{ width: '100%', height: 1, background: ' rgba(0,240,255,0.15)' }} />
+        </div>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div style={{ width: 1, height: '100%', background: ' rgba(0,240,255,0.15)' }} />
+        </div>
+        <div
+          ref={knobRef}
+          className="pointer-events-none absolute rounded-full"
+          style={{
+            width: 44, height: 44,
+            top: '50%', left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'radial-gradient(circle at 35% 35%,  rgba(0,240,255,0.7),  rgba(0,240,255,0.2))',
+            border: '2px solid  rgba(0,240,255,0.8)',
+            boxShadow: '0 0 14px  rgba(0,240,255,0.6)',
+            transition: 'none',
+          }}
+        />
+        <div className="pointer-events-none absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">UP</div>
+        <div className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">DN</div>
+        <div className="pointer-events-none absolute top-1/2 -left-6 -translate-y-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">L</div>
+        <div className="pointer-events-none absolute top-1/2 -right-6 -translate-y-1/2 text-[9px] font-mono text-[#00f0ff]/50 tracking-widest">R</div>
+      </div>
+      {/* Right Ă˘â‚¬â€ť Boost + Fire buttons */}
+      <div className="pointer-events-auto absolute bottom-20 right-8 flex flex-col items-center gap-3">
+        {/* Fire button */}
+        <button
+          onTouchStart={onShootStart}
+          onTouchEnd={onShootEnd}
+          onTouchCancel={onShootEnd}
+          className="flex items-center justify-center rounded-full font-mono text-xs tracking-widest active:scale-95"
+          style={{
+            width: 72, height: 72,
+            background: 'radial-gradient(circle at 35% 35%,  rgba(255,255,0,0.4),  rgba(255,200,0,0.1))',
+            border: '2px solid  rgba(255,220,0,0.8)',
+            boxShadow: '0 0 20px  rgba(255,200,0,0.4)',
+            color: ' #ffdd00',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          FIRE
+        </button>
+        {/* Boost button */}
+        <button
+          onTouchStart={onBoostStart}
+          onTouchEnd={onBoostEnd}
+          onTouchCancel={onBoostEnd}
+          className="flex items-center justify-center rounded-full font-mono text-xs tracking-widest active:scale-95"
+          style={{
+            width: 64, height: 64,
+            background: 'radial-gradient(circle at 35% 35%,  rgba(255,45,149,0.4),  rgba(255,45,149,0.1))',
+            border: '2px solid  rgba(255,45,149,0.7)',
+            boxShadow: '0 0 20px  rgba(255,45,149,0.35)',
+78 hidden lines  |  
+ useEffect() callback
+ <function>
+3 hidden lines
+11 hidden lines
+
+player.tsx
+
+components/game/player.tsx
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+159
+160
+161
+162
+163
+164
+175
+176
+177
+178
+179
+180
+190
+191
+192
+193
+194
+195
+196
+197
+198
+'use client';
+import { useEffect, useMemo, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
+import { useGame, world } from '@/lib/game-store';
+import { mobileInput } from '@/lib/game-store';
+import { CHUNK_SIZE, buildingAt, sectorName } from '@/lib/procgen';
+const CRUISE = 16
+const BOOST = 34
+const TURN = 1.9
+const CLIMB = 14
+const TRAIL_COUNT = 24
+export function Player() {
+  const group = useRef<THREE.Group>(null)
+  const trailMesh = useRef<THREE.InstancedMesh>(null)
+  const keys = useRef<Record<string, boolean>>({})
+  const camera = useThree((s) => s.camera)
+  const setSpeed = useGame((s) => s.setSpeed)
+  const setSector = useGame((s) => s.setSector)
+  const started = useGame((s) => s.started)
+  const camTarget = useMemo(() => new THREE.Vector3(), [])
+  const lookTarget = useMemo(() => new THREE.Vector3(), [])
+  const lastSector = useRef('')
+  const speedRef = useRef(CRUISE)
+  const bank = useRef(0)
+  const pitch = useRef(0)
+  // Trail history
+  const trailPositions = useRef<THREE.Vector3[]>(
+    Array.from({ length: TRAIL_COUNT }, () => new THREE.Vector3(0, 16, 0))
+  )
+  const trailDummy = useMemo(() => new THREE.Object3D(), [])
+  const trailCyan = useMemo(() => new THREE.Color(' #00f0ff'), [])
+  const trailMagenta = useMemo(() => new THREE.Color(' #ff2d95'), [])
+  const trailMix = useMemo(() => new THREE.Color(), [])
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    const g = group.current
+    if (!g || !started) return
+    const k = keys.current
+    // Steering Ă˘â‚¬â€ť keyboard OR mobile joystick
+    const kTurnInput = (k.KeyA || k.ArrowLeft ? 1 : 0) - (k.KeyD || k.ArrowRight ? 1 : 0)
+    const kClimbInput = (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0)
+    const kBoosting = k.ShiftLeft || k.ShiftRight || k.Space
+    // Combine keyboard + mobile (mobile joystick: x = steer left/right, y = climb up/down)
+    const turnInput = kTurnInput !== 0 ? kTurnInput : -mobileInput.x
+    const climbInput = kClimbInput !== 0 ? kClimbInput : -mobileInput.y
+    const boosting = kBoosting || mobileInput.boost
+    world.heading += turnInput * TURN * dt
+    const targetSpeed = (boosting ? BOOST : CRUISE) + world.boost
+    speedRef.current = THREE.MathUtils.damp(speedRef.current, targetSpeed, 3, dt)
+    world.boost = Math.max(0, world.boost - dt * 10)
+    // Move forward along heading
+    const dirX = Math.sin(world.heading)
+    const dirZ = Math.cos(world.heading)
+    const nx = world.playerPos.x + dirX * speedRef.current * dt
+    const nz = world.playerPos.z + dirZ * speedRef.current * dt
+    // Deterministic building collision
+    const hit = buildingAt(nx, nz)
+    if (hit && world.playerPos.y < hit.h + 1) {
+      speedRef.current = Math.max(6, speedRef.current * 0.4)
+    g.position.set(world.playerPos.x, world.playerPos.y, world.playerPos.z)
+    g.rotation.y = world.heading
+    // Banking and pitching for feel
+    bank.current = THREE.MathUtils.damp(bank.current, turnInput * 0.55, 5, dt)
+    pitch.current = THREE.MathUtils.damp(pitch.current, -climbInput * 0.3, 5, dt)
+    g.rotation.z = bank.current
+    g.rotation.x = pitch.current
+    // Chase camera Ă˘â‚¬â€ť pull back more when boosting
+    const camDist = 11 + (speedRef.current - CRUISE) * 0.18
+    camTarget.set(
+      world.playerPos.x - dirX * camDist,
+      world.playerPos.y + 4.5,
+      world.playerPos.z - dirZ * camDist
+    )
+    camera.position.lerp(camTarget, 1 - Math.exp(-4 * dt))
+    lookTarget.set(
+      world.playerPos.x + dirX * 8,
+      world.playerPos.y + 1,
+      world.playerPos.z + dirZ * 8
+    )
+    camera.lookAt(lookTarget)
+    // Update trail positions (shift history)
+    const tm = trailMesh.current
+    if (tm) {
+      trailPositions.current.unshift(
+        new THREE.Vector3(world.playerPos.x, world.playerPos.y, world.playerPos.z)
+      )
+      trailPositions.current.length = TRAIL_COUNT
+      for (let i = 0; i < TRAIL_COUNT; i++) {
+        const t = i / TRAIL_COUNT
+        const pos = trailPositions.current[i]
+        trailDummy.position.copy(pos)
+        const s = (1 - t) * (boosting ? 0.35 : 0.18)
+        trailDummy.scale.setScalar(s)
+        trailDummy.updateMatrix()
+        tm.setMatrixAt(i, trailDummy.matrix)
+        // Cyan Ă˘â€ â€™ magenta gradient along trail
+        tm.setColorAt(i, trailMix.lerpColors(trailCyan, trailMagenta, t).multiplyScalar(3 * (1 - t)))
+      }
+      tm.instanceMatrix.needsUpdate = true
+      if (tm.instanceColor) tm.instanceColor.needsUpdate = true
+    }
+    // HUD updates
+    const spd = Math.round(speedRef.current * 10)
+    if (Math.abs(useGame.getState().speed - spd) > 4) setSpeed(spd)
+    const cx = Math.floor(world.playerPos.x / CHUNK_SIZE)
+  return (
+    <group ref={group} position={[0, 16, 0]}>
+      {/* Boost trail */}
+      <instancedMesh ref={trailMesh} args={[undefined, undefined, TRAIL_COUNT]} frustumCulled={false}>
+        <sphereGeometry args={[1, 6, 6]} />
+        <boxGeometry args={[3.2, 0.08, 0.9]} />
+        <meshStandardMaterial color=" #0a0a14" metalness={0.9} roughness={0.3} />
+      </mesh>
+      {/* Neon trims */}
+      <mesh position={[1.6, -0.1, -0.5]}>
+        <boxGeometry args={[0.12, 0.12, 0.95]} />
+        <meshStandardMaterial color=" #00f0ff" emissive=" #00f0ff" emissiveIntensity={8} />
+      </mesh>
+      <pointLight position={[0, 0, -1.5]} color=" #00f0ff" intensity={16} distance={18} />
+      {/* Underside glow */}
+      <pointLight position={[0, -1, 0]} color=" #ff2d95" intensity={6} distance={8} />
+    </group>
+  )
+}
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+203
+204
+205
+206
+207
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+244
+245
+246
+247
+248
+249
+250
+251
+252
+253
+254
+262
+263
+264
+265
+266
+267
+268
+269
+270
+271
+272
+273
+284
+285
+286
+287
+288
+289
+290
+291
+292
+293
+294
+304
+305
+306
+307
+308
+309
+310
+311
+import { useGame, world } from '@/lib/game-store';
+import { mobileInput } from '@/lib/game-store';
+import { CHUNK_SIZE, buildingAt, sectorName } from '@/lib/procgen';
+const CRUISE = 16
+const BOOST = 34
+const TURN = 1.9
+const CLIMB = 14
+  const started = useGame((s) => s.started)
+  // Trail history
+    if (!g || !started) return
+    // Steering Ă˘â‚¬â€ť keyboard OR mobile joystick
+    const kBoosting = k.ShiftLeft || k.ShiftRight || k.Space
+    // Combine keyboard + mobile (mobile joystick: x = steer left/right, y = climb up/down)
+    const targetSpeed = (boosting ? BOOST : CRUISE) + world.boost
+    // Move forward along heading
+    // Deterministic building collision
+    // Banking and pitching for feel
+    // Chase camera Ă˘â‚¬â€ť pull back more when boosting
+    lookTarget.set(
+      world.playerPos.x + dirX * 8,
+      world.playerPos.y + 1,
+      world.playerPos.z + dirZ * 8
+    )
+    // Update trail positions (shift history)
+      trailPositions.current.unshift(
+        new THREE.Vector3(world.playerPos.x, world.playerPos.y, world.playerPos.z)
+      )
+        // Cyan Ă˘â€ â€™ magenta gradient along trail
+    // HUD updates
+      {/* Underside glow */}
+'use client';
+import { useEffect, useMemo, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
+import * as THREE from 'three';
+import { useGame, world, mobileInput, bullets, medPacks } from '@/lib/game-store';
+import { CHUNK_SIZE, buildingAt, sectorName, MED_CELL, medPackAt } from '@/lib/procgen';
+const CRUISE = 18
+const BOOST_SPEED = 38
+const TURN = 2.0
+const CLIMB = 15
+const TRAIL_COUNT = 24
+const SHOOT_COOLDOWN = 0.18 // seconds between shots
+const BULLET_SPEED = 120
+const BULLET_LIFE = 1.2
+const bulletDummy = new THREE.Object3D()
+export function Player() {
+  const group = useRef<THREE.Group>(null)
+  const trailMesh = useRef<THREE.InstancedMesh>(null)
+  const bulletMesh = useRef<THREE.InstancedMesh>(null)
+  const keys = useRef<Record<string, boolean>>({})
+  const camera = useThree((s) => s.camera)
+  const setSpeed = useGame((s) => s.setSpeed)
+  const setSector = useGame((s) => s.setSector)
+  const phase = useGame((s) => s.phase)
+  const takeDamage = useGame((s) => s.takeDamage)
+  const heal = useGame((s) => s.heal)
+  const useAmmo = useGame((s) => s.useAmmo)
+  const camTarget = useMemo(() => new THREE.Vector3(), [])
+  const lookTarget = useMemo(() => new THREE.Vector3(), [])
+  const lastSector = useRef('')
+  const speedRef = useRef(CRUISE)
+  const bank = useRef(0)
+  const pitch = useRef(0)
+  const shootCooldown = useRef(0)
+  const hitCooldown = useRef(0)
+  const lastMedScan = useRef(0)
+  const trailPositions = useRef<THREE.Vector3[]>(
+    Array.from({ length: TRAIL_COUNT }, () => new THREE.Vector3(0, 16, 0))
+  )
+  const trailDummy = useMemo(() => new THREE.Object3D(), [])
+  const trailCyan = useMemo(() => new THREE.Color(' #00f0ff'), [])
+  const trailMagenta = useMemo(() => new THREE.Color(' #ff2d95'), [])
+  const trailMix = useMemo(() => new THREE.Color(), [])
+  const bulletColor = useMemo(() => new THREE.Color(' #ffff00').multiplyScalar(4), [])
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    const g = group.current
+    const playing = phase === 'playing'
+    if (!g) return
+    if (!playing) {
+      // Still update camera to follow player position smoothly
+      const dirX = Math.sin(world.heading)
+      const dirZ = Math.cos(world.heading)
+      const camDist = 11
+      camTarget.set(
+        world.playerPos.x - dirX * camDist,
+        world.playerPos.y + 4.5,
+        world.playerPos.z - dirZ * camDist
+      )
+      camera.position.lerp(camTarget, 1 - Math.exp(-2 * dt))
+      lookTarget.set(world.playerPos.x + dirX * 8, world.playerPos.y + 1, world.playerPos.z + dirZ * 8)
+      camera.lookAt(lookTarget)
+      return
+    }
+    const k = keys.current
+    const kTurnInput = (k.KeyA || k.ArrowLeft ? 1 : 0) - (k.KeyD || k.ArrowRight ? 1 : 0)
+    const kClimbInput = (k.KeyW || k.ArrowUp ? 1 : 0) - (k.KeyS || k.ArrowDown ? 1 : 0)
+    const kBoosting = k.ShiftLeft || k.ShiftRight
+    const kShooting = k.Space || k.KeyF || k.ControlLeft
+    const turnInput = kTurnInput !== 0 ? kTurnInput : -mobileInput.x
+    const climbInput = kClimbInput !== 0 ? kClimbInput : -mobileInput.y
+    const boosting = kBoosting || mobileInput.boost
+    const shooting = kShooting || mobileInput.shoot
+    world.heading += turnInput * TURN * dt
+    const targetSpeed = (boosting ? BOOST_SPEED : CRUISE) + world.boost
+    speedRef.current = THREE.MathUtils.damp(speedRef.current, targetSpeed, 3, dt)
+    world.boost = Math.max(0, world.boost - dt * 10)
+    const dirX = Math.sin(world.heading)
+    const dirZ = Math.cos(world.heading)
+    const nx = world.playerPos.x + dirX * speedRef.current * dt
+    const nz = world.playerPos.z + dirZ * speedRef.current * dt
+    const hit = buildingAt(nx, nz)
+    if (hit && world.playerPos.y < hit.h + 1) {
+      speedRef.current = Math.max(6, speedRef.current * 0.4)
+    g.position.set(world.playerPos.x, world.playerPos.y, world.playerPos.z)
+    g.rotation.y = world.heading
+    bank.current = THREE.MathUtils.damp(bank.current, turnInput * 0.55, 5, dt)
+    pitch.current = THREE.MathUtils.damp(pitch.current, -climbInput * 0.3, 5, dt)
+    g.rotation.z = bank.current
+    g.rotation.x = pitch.current
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Shooting Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    shootCooldown.current = Math.max(0, shootCooldown.current - dt)
+    if (shooting && shootCooldown.current === 0) {
+      const fired = useAmmo()
+      if (fired) {
+        shootCooldown.current = SHOOT_COOLDOWN
+        // Find an inactive bullet slot
+        for (let i = 0; i < bullets.length; i++) {
+          if (!bullets[i].active) {
+            bullets[i].active = true
+            bullets[i].life = BULLET_LIFE
+            bullets[i].pos.x = world.playerPos.x + dirX * 2
+            bullets[i].pos.y = world.playerPos.y
+            bullets[i].pos.z = world.playerPos.z + dirZ * 2
+            bullets[i].vel.x = dirX * BULLET_SPEED
+            bullets[i].vel.y = 0
+            bullets[i].vel.z = dirZ * BULLET_SPEED
+            bullets[i].damage = 25
+            break
+          }
+        }
+      }
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Update bullets Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const bm = bulletMesh.current
+    let activeBullets = 0
+    if (bm) {
+      for (let i = 0; i < bullets.length; i++) {
+        const b = bullets[i]
+        if (!b.active) continue
+        b.life -= dt
+        if (b.life <= 0) { b.active = false; continue }
+        b.pos.x += b.vel.x * dt
+        b.pos.y += b.vel.y * dt
+        b.pos.z += b.vel.z * dt
+        // Deactivate if hits building
+        const bHit = buildingAt(b.pos.x, b.pos.z)
+        if (bHit && b.pos.y < bHit.h) { b.active = false; continue }
+        bulletDummy.position.set(b.pos.x, b.pos.y, b.pos.z)
+        bulletDummy.scale.setScalar(0.22)
+        bulletDummy.updateMatrix()
+        bm.setMatrixAt(activeBullets, bulletDummy.matrix)
+        bm.setColorAt(activeBullets, bulletColor)
+        activeBullets++
+      }
+      bm.count = activeBullets
+      bm.instanceMatrix.needsUpdate = true
+      if (bm.instanceColor) bm.instanceColor.needsUpdate = true
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Med pack pickup Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    hitCooldown.current = Math.max(0, hitCooldown.current - dt)
+    lastMedScan.current += dt
+    if (lastMedScan.current > 0.1) {
+      lastMedScan.current = 0
+      const p = world.playerPos
+      const pix = Math.floor(p.x / MED_CELL)
+      const piz = Math.floor(p.z / MED_CELL)
+      const level = useGame.getState().level
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          const ix = pix + i
+          const iz = piz + j
+          const key = `${ix},${iz}`
+          const existing = medPacks.find(m => m.id === key)
+          if (existing) {
+            if (existing.active) {
+              const dx = existing.pos.x - p.x
+              const dy = existing.pos.y - p.y
+              const dz = existing.pos.z - p.z
+              if (dx * dx + dy * dy + dz * dz < 16) {
+                existing.active = false
+                heal(existing.heal)
+              }
+            }
+          } else {
+            const mp = medPackAt(ix, iz, level)
+            if (mp) {
+              medPacks.push({ id: key, pos: mp, active: true, heal: 30 })
+            }
+          }
+        }
+      }
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Chase camera Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const camDist = 11 + (speedRef.current - CRUISE) * 0.18
+    camTarget.set(
+      world.playerPos.x - dirX * camDist,
+      world.playerPos.y + 4.5,
+      world.playerPos.z - dirZ * camDist
+    )
+    camera.position.lerp(camTarget, 1 - Math.exp(-4 * dt))
+    lookTarget.set(world.playerPos.x + dirX * 8, world.playerPos.y + 1, world.playerPos.z + dirZ * 8)
+    camera.lookAt(lookTarget)
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Trail Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const tm = trailMesh.current
+    if (tm) {
+      trailPositions.current.unshift(new THREE.Vector3(world.playerPos.x, world.playerPos.y, world.playerPos.z))
+      trailPositions.current.length = TRAIL_COUNT
+      for (let i = 0; i < TRAIL_COUNT; i++) {
+        const t = i / TRAIL_COUNT
+        const pos = trailPositions.current[i]
+        trailDummy.position.copy(pos)
+        const s = (1 - t) * (boosting ? 0.35 : 0.18)
+        trailDummy.scale.setScalar(s)
+        trailDummy.updateMatrix()
+        tm.setMatrixAt(i, trailDummy.matrix)
+        tm.setColorAt(i, trailMix.lerpColors(trailCyan, trailMagenta, t).multiplyScalar(3 * (1 - t)))
+      }
+      tm.instanceMatrix.needsUpdate = true
+      if (tm.instanceColor) tm.instanceColor.needsUpdate = true
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ HUD updates Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const spd = Math.round(speedRef.current * 10)
+    if (Math.abs(useGame.getState().speed - spd) > 4) setSpeed(spd)
+    const cx = Math.floor(world.playerPos.x / CHUNK_SIZE)
+  return (
+    <group ref={group} position={[0, 16, 0]}>
+      {/* Bullet pool */}
+      <instancedMesh ref={bulletMesh} args={[undefined, undefined, bullets.length]} frustumCulled={false}>
+        <sphereGeometry args={[1, 6, 6]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Boost trail */}
+      <instancedMesh ref={trailMesh} args={[undefined, undefined, TRAIL_COUNT]} frustumCulled={false}>
+        <sphereGeometry args={[1, 6, 6]} />
+        <boxGeometry args={[3.2, 0.08, 0.9]} />
+        <meshStandardMaterial color=" #0a0a14" metalness={0.9} roughness={0.3} />
+      </mesh>
+      {/* Gun barrel */}
+      <mesh position={[0, -0.1, 1.2]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.08, 0.08, 1.2, 6]} />
+        <meshStandardMaterial color=" #1a1a2e" metalness={1} roughness={0.1} />
+      </mesh>
+      {/* Neon trims */}
+      <mesh position={[1.6, -0.1, -0.5]}>
+        <boxGeometry args={[0.12, 0.12, 0.95]} />
+        <meshStandardMaterial color=" #00f0ff" emissive=" #00f0ff" emissiveIntensity={8} />
+      </mesh>
+      <pointLight position={[0, 0, -1.5]} color=" #00f0ff" intensity={16} distance={18} />
+      <pointLight position={[0, -1, 0]} color=" #ff2d95" intensity={6} distance={8} />
+    </group>
+  )
+}
+12 hidden lines
+15 hidden lines
+7 hidden lines
+10 hidden lines
+9 hidden lines
+
+shards.tsx
+
+components/game/shards.tsx
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+'use client';
+import { useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { SHARD_CELL, shardAt } from '@/lib/procgen';
+import { useGame, world } from '@/lib/game-store';
+const MAX = 64
+const VIEW = 5 // shard cells radius around the player
+const dummy = new THREE.Object3D()
+const cyan = new THREE.Color(' #00ffe1').multiplyScalar(3)
+export function Shards() {
+  const mesh = useRef<THREE.InstancedMesh>(null)
+  const collected = useMemo(() => new Set<string>(), [])
+  const collect = useGame((s) => s.collect)
+  const elapsed = useRef(0)
+  useFrame((_, delta) => {
+    const m = mesh.current
+    if (!m) return
+    elapsed.current += Math.min(delta, 0.05)
+    const t = elapsed.current
+    const p = world.playerPos
+    const pix = Math.floor(p.x / SHARD_CELL)
+    const piz = Math.floor(p.z / SHARD_CELL)
+    let count = 0
+    for (let i = -VIEW; i <= VIEW && count < MAX; i++) {
+      for (let j = -VIEW; j <= VIEW && count < MAX; j++) {
+        const ix = pix + i
+        const iz = piz + j
+        const key = `${ix},${iz}`
+        if (collected.has(key)) continue
+        const s = shardAt(ix, iz)
+        if (!s) continue
+        // Collect check
+        const dx = s.x - p.x
+        const dy = s.y - p.y
+        const dz = s.z - p.z
+        if (dx * dx + dy * dy + dz * dz < 12) {
+          collected.add(key)
+          collect()
+          world.boost = 10 // little speed rush on pickup
+          continue
+        }
+        dummy.position.set(s.x, s.y + Math.sin(t * 2 + ix * 3 + iz) * 0.6, s.z)
+        dummy.rotation.set(0, t * 1.5 + ix + iz, 0)
+        dummy.scale.setScalar(1)
+        dummy.updateMatrix()
+        m.setMatrixAt(count, dummy.matrix)
+        m.setColorAt(count, cyan)
+        count++
+      }
+    }
+    m.count = count
+    m.instanceMatrix.needsUpdate = true
+    if (m.instanceColor) m.instanceColor.needsUpdate = true
+  })
+  return (
+    <instancedMesh ref={mesh} args={[undefined, undefined, MAX]} frustumCulled={false}>
+      <octahedronGeometry args={[0.8, 0]} />
+      <meshBasicMaterial toneMapped={false} />
+    </instancedMesh>
+  )
+}
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+import { SHARD_CELL, shardAt } from '@/lib/procgen';
+import { useGame, world } from '@/lib/game-store';
+const MAX = 64
+const VIEW = 5 // shard cells radius around the player
+const dummy = new THREE.Object3D()
+const cyan = new THREE.Color('#00ffe1').multiplyScalar(3)
+export function Shards() {
+  const mesh = useRef<THREE.InstancedMesh>(null)
+  const collected = useMemo(() => new Set<string>(), [])
+  const collect = useGame((s) => s.collect)
+  useFrame((_, delta) => {
+    const m = mesh.current
+    if (!m) return
+    elapsed.current += Math.min(delta, 0.05)
+    const t = elapsed.current
+    const p = world.playerPos
+    const pix = Math.floor(p.x / SHARD_CELL)
+    const piz = Math.floor(p.z / SHARD_CELL)
+    for (let i = -VIEW; i <= VIEW && count < MAX; i++) {
+      for (let j = -VIEW; j <= VIEW && count < MAX; j++) {
+        const ix = pix + i
+        const iz = piz + j
+        const key = `${ix},${iz}`
+        if (collected.has(key)) continue
+        const s = shardAt(ix, iz)
+        if (!s) continue
+        // Collect check
+        const dx = s.x - p.x
+        const dy = s.y - p.y
+        const dz = s.z - p.z
+        if (dx * dx + dy * dy + dz * dz < 12) {
+          collected.add(key)
+          collect()
+          world.boost = 10 // little speed rush on pickup
+          continue
+        }
+        dummy.position.set(s.x, s.y + Math.sin(t * 2 + ix * 3 + iz) * 0.6, s.z)
+        dummy.rotation.set(0, t * 1.5 + ix + iz, 0)
+        dummy.scale.setScalar(1)
+        dummy.updateMatrix()
+        m.setMatrixAt(count, dummy.matrix)
+        m.setColorAt(count, cyan)
+    }
+    m.count = count
+    m.instanceMatrix.needsUpdate = true
+    if (m.instanceColor) m.instanceColor.needsUpdate = true
+    <instancedMesh ref={mesh} args={[undefined, undefined, MAX]} frustumCulled={false}>
+      <octahedronGeometry args={[0.8, 0]} />
+  )
+'use client';
+import { useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import * as THREE from 'three';
+import { world, medPacks, useGame } from '@/lib/game-store';
+import { getLevelExitPos } from '@/lib/procgen';
+const medDummy = new THREE.Object3D()
+const medColor = new THREE.Color(' #00ff88')?.multiplyScalar(3)
+const portalColor = new THREE.Color(' #ffb300')?.multiplyScalar(2)
+const portalDummy = new THREE.Object3D()
+export function MedPacksAndPortal() {
+  const medMesh = useRef<THREE?.InstancedMesh>(null)
+  const portalMesh = useRef<THREE?.InstancedMesh>(null)
+  const portalRing = useRef<THREE?.Mesh>(null)
+  const elapsed = useRef(0)
+  const phase = useGame((s) => s?.phase)
+  const level = useGame((s) => s?.level)
+  const nextLevel = useGame((s) => s?.nextLevel)
+  const portalHit = useRef(false)
+  const exitPos = useMemo(() => getLevelExitPos(level), [level])
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    elapsed.current += dt
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Med packs Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    const mm = medMesh?.current
+    if (mm) {
+      let count = 0
+      for (let i = 0; i < medPacks?.length && count < 32; i++) {
+        const mp = medPacks?.[i]
+        if (!mp?.active) continue
+        medDummy?.position?.set(mp?.pos?.x, mp?.pos?.y + Math.sin(elapsed?.current * 2 + i) * 0.5, mp?.pos?.z)
+        medDummy.rotation.y = elapsed?.current * 1.5 + i
+        medDummy?.scale?.setScalar(0.7)
+        medDummy?.updateMatrix()
+        mm?.setMatrixAt(count, medDummy?.matrix)
+        mm?.setColorAt(count, medColor)
+        count++
+      }
+      mm.count = count
+      mm.instanceMatrix.needsUpdate = true
+      if (mm?.instanceColor) mm.instanceColor.needsUpdate = true
+    }
+    // Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Level exit portal Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+    if (phase !== 'playing') { portalHit.current = false; return }
+    const pr = portalRing?.current
+    if (pr) {
+      pr.rotation.y = elapsed?.current * 0.8
+      pr.rotation.x = Math.sin(elapsed?.current * 0.5) * 0.3
+    }
+    // Check if player reached exit
+    const p = world?.playerPos
+    const dx = p?.x - exitPos?.x
+    const dy = p?.y - exitPos?.y
+    const dz = p?.z - exitPos?.z
+    if (!portalHit?.current && dx * dx + dy * dy + dz * dz < 100) {
+      portalHit.current = true
+      nextLevel()
+    }
+  })
+  return (
+    <>
+      {/* Med packs Ă˘â‚¬â€ť cross shape */}
+      <instancedMesh ref={medMesh} args={[undefined, undefined, 32]} frustumCulled={false}>
+        <boxGeometry args={[0.3, 1.2, 0.3]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      {/* Level exit portal */}
+      <group position={[exitPos?.x, exitPos?.y, exitPos?.z]}>
+        {/* Outer ring */}
+        <mesh ref={portalRing}>
+          <torusGeometry args={[5, 0.4, 8, 32]} />
+          <meshBasicMaterial color=" #ffb300" toneMapped={false} />
+        </mesh>
+        {/* Inner glow disc */}
+        <mesh rotation={[Math.PI / 2, 0, 0]}>
+          <circleGeometry args={[4.5, 32]} />
+          <meshBasicMaterial color=" #ffb300" transparent opacity={0.15} toneMapped={false} side={THREE?.DoubleSide} />
+        </mesh>
+        {/* Portal light */}
+        <pointLight color=" #ffb300" intensity={20} distance={30} />
+        {/* Vertical beam */}
+        <mesh position={[0, 15, 0]}>
+          <cylinderGeometry args={[0.2, 0.2, 30, 6]} />
+          <meshBasicMaterial color=" #ffb300" transparent opacity={0.3} toneMapped={false} />
+        </mesh>
+      </group>
+    </>
+  );
+}
+
+game-store.ts
+
+lib/game-store.ts
+
+Edited
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+69
+70
+71
+72
+73
+74
+75
+76
+import { create } from 'zustand';
+type GameState = {
+  shards: number
+  best: number
+  heat: number // 0..1 Ă˘â‚¬â€ť how agitated the drone swarm is
+  speed: number
+  sector: string
+  hits: number
+  started: boolean
+  gameOver: boolean
+  combo: number        // consecutive shards without getting hit
+  hitFlash: number     // timestamp of last hit (for screen flash)
+  collect: () => void
+  loseShard: () => void
+  setHeat: (h: number) => void
+  setSpeed: (s: number) => void
+  setSector: (s: string) => void
+  start: () => void
+  restart: () => void
+}
+export const useGame = create<GameState>((set) => ({
+  shards: 0,
+  best: 0,
+  heat: 0,
+  speed: 0,
+  sector: '',
+  hits: 0,
+  started: false,
+  gameOver: false,
+  combo: 0,
+  hitFlash: 0,
+  collect: () =>
+    set((s) => ({
+      shards: s.shards + 1,
+      best: Math.max(s.best, s.shards + 1),
+      combo: s.combo + 1,
+    })),
+  loseShard: () =>
+    set((s) => {
+      const newShards = Math.max(0, s.shards - 2)
+      return {
+        shards: newShards,
+        hits: s.hits + 1,
+        combo: 0,
+        hitFlash: Date.now(),
+        gameOver: newShards === 0 && s.shards > 0 && s.hits >= 4,
+      }
+    }),
+  setHeat: (heat) => set({ heat }),
+  setSpeed: (speed) => set({ speed }),
+  setSector: (sector) => set({ sector }),
+  start: () => set({ started: true, gameOver: false, shards: 0, hits: 0, combo: 0, hitFlash: 0 }),
+  restart: () => set({ started: true, gameOver: false, shards: 0, hits: 0, combo: 0, hitFlash: 0, heat: 0, speed: 0 }),
+}))
+// Mutable per-frame world state shared between systems without re-renders.
+// Mutable mobile touch input Ă˘â‚¬â€ť updated by MobileControls, read by Player
+export const mobileInput = {
+  x: 0,   // -1..1  left/right (steer)
+  y: 0,   // -1..1  up/down    (climb)
+  boost: false,
+}
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+33
+34
+35
+36
+37
+38
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+50
+51
+52
+53
+54
+55
+56
+57
+58
+59
+60
+61
+62
+63
+64
+65
+66
+67
+68
+69
+70
+71
+72
+73
+74
+75
+76
+77
+78
+79
+80
+81
+82
+83
+84
+85
+86
+87
+88
+89
+90
+91
+92
+93
+94
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+208
+209
+210
+211
+212
+213
+214
+215
+216
+217
+218
+219
+220
+221
+222
+223
+224
+225
+226
+227
+228
+229
+230
+231
+232
+233
+234
+235
+236
+237
+238
+239
+240
+241
+242
+243
+  shards: number
+  heat: number // 0..1 Ă˘â‚¬â€ť how agitated the drone swarm is
+  hits: number
+  combo: number        // consecutive shards without getting hit
+  hitFlash: number     // timestamp of last hit (for screen flash)
+  collect: () => void
+  loseShard: () => void
+  start: () => void
+  restart: () => void
+export const useGame = create<GameState>((set) => ({
+  shards: 0,
+  hits: 0,
+  combo: 0,
+  collect: () =>
+      shards: s.shards + 1,
+      best: Math.max(s.best, s.shards + 1),
+      combo: s.combo + 1,
+  loseShard: () =>
+      const newShards = Math.max(0, s.shards - 2)
+        shards: newShards,
+        hits: s.hits + 1,
+        combo: 0,
+        hitFlash: Date.now(),
+        gameOver: newShards === 0 && s.shards > 0 && s.hits >= 4,
+  start: () => set({ started: true, gameOver: false, shards: 0, hits: 0, combo: 0, hitFlash: 0 }),
+  restart: () => set({ started: true, gameOver: false, shards: 0, hits: 0, combo: 0, hitFlash: 0, heat: 0, speed: 0 }),
+  x: 0,   // -1..1  left/right (steer)
+  y: 0,   // -1..1  up/down    (climb)
+}
+import { create } from 'zustand';
+export type WeaponType = 'laser' | 'plasma' | 'rocket'
+export type GamePhase = 'menu' | 'level_start' | 'playing' | 'level_complete' | 'game_over'
+type GameState = {
+  // Core
+  phase: GamePhase
+  score: number
+  best: number
+  level: number
+  heat: number
+  speed: number
+  sector: string
+  hitFlash: number
+  // Health
+  health: number
+  maxHealth: number
+  // Weapons
+  weapon: WeaponType
+  ammo: number
+  maxAmmo: number
+  kills: number
+  levelKillTarget: number
+  // Legacy compat
+  started: boolean
+  gameOver: boolean
+  // Actions
+  start: () => void
+  restart: () => void
+  nextLevel: () => void
+  takeDamage: (amount: number) => void
+  heal: (amount: number) => void
+  addScore: (pts: number) => void
+  registerKill: () => void
+  setHeat: (h: number) => void
+  setSpeed: (s: number) => void
+  setSector: (s: string) => void
+  setWeapon: (w: WeaponType) => void
+  useAmmo: () => boolean
+  reloadAmmo: (amount: number) => void
+  beginPlaying: () => void
+}
+function levelKillTarget(level: number) {
+  return 4 + level * 3
+}
+function levelMaxHealth(level: number) {
+  return 100
+}
+function levelAmmo(level: number) {
+  return 30 + level * 5
+}
+export const useGame = create<GameState>((set, get) => ({
+  phase: 'menu',
+  score: 0,
+  best: 0,
+  level: 1,
+  heat: 0,
+  speed: 0,
+  sector: '',
+  hitFlash: 0,
+  health: 100,
+  maxHealth: 100,
+  weapon: 'laser',
+  ammo: 30,
+  maxAmmo: 30,
+  kills: 0,
+  levelKillTarget: levelKillTarget(1),
+  started: false,
+  gameOver: false,
+  start: () =>
+    set({
+      phase: 'level_start',
+      score: 0,
+      level: 1,
+      health: 100,
+      maxHealth: 100,
+      ammo: 30,
+      maxAmmo: 30,
+      kills: 0,
+      levelKillTarget: levelKillTarget(1),
+      heat: 0,
+      speed: 0,
+      hitFlash: 0,
+      weapon: 'laser',
+      started: true,
+      gameOver: false,
+    }),
+  beginPlaying: () => set({ phase: 'playing' }),
+  restart: () =>
+    set({
+      phase: 'level_start',
+      score: 0,
+      level: 1,
+      health: 100,
+      maxHealth: 100,
+      ammo: 30,
+      maxAmmo: 30,
+      kills: 0,
+      levelKillTarget: levelKillTarget(1),
+      heat: 0,
+      speed: 0,
+      hitFlash: 0,
+      weapon: 'laser',
+      started: true,
+      gameOver: false,
+    }),
+  nextLevel: () =>
+    set((s) => {
+      const nextLvl = s.level + 1
+      const best = Math.max(s.best, s.score)
+      return {
+        phase: 'level_start',
+        level: nextLvl,
+        best,
+        kills: 0,
+        levelKillTarget: levelKillTarget(nextLvl),
+        health: Math.min(s.health + 30, levelMaxHealth(nextLvl)),
+        maxHealth: levelMaxHealth(nextLvl),
+        ammo: levelAmmo(nextLvl),
+        maxAmmo: levelAmmo(nextLvl),
+        heat: 0,
+        hitFlash: 0,
+      }
+    }),
+  takeDamage: (amount) =>
+    set((s) => {
+      const newHealth = Math.max(0, s.health - amount)
+      const best = newHealth <= 0 ? Math.max(s.best, s.score) : s.best
+      return {
+        health: newHealth,
+        hitFlash: Date.now(),
+        phase: newHealth <= 0 ? 'game_over' : s.phase,
+        gameOver: newHealth <= 0,
+        best,
+      }
+    }),
+  heal: (amount) =>
+    set((s) => ({
+      health: Math.min(s.maxHealth, s.health + amount),
+    })),
+  addScore: (pts) =>
+    set((s) => ({
+      score: s.score + pts,
+      best: Math.max(s.best, s.score + pts),
+    })),
+  registerKill: () =>
+    set((s) => {
+      const kills = s.kills + 1
+      const levelComplete = kills >= s.levelKillTarget
+      return {
+        kills,
+        score: s.score + 100 * s.level,
+        best: Math.max(s.best, s.score + 100 * s.level),
+        phase: levelComplete ? 'level_complete' : s.phase,
+      }
+    }),
+  setHeat: (heat) => set({ heat }),
+  setSpeed: (speed) => set({ speed }),
+  setSector: (sector) => set({ sector }),
+  setWeapon: (weapon) => set({ weapon }),
+  useAmmo: () => {
+    const s = get()
+    if (s.ammo <= 0) return false
+    set({ ammo: s.ammo - 1 })
+    return true
+  },
+  reloadAmmo: (amount) =>
+    set((s) => ({
+      ammo: Math.min(s.maxAmmo, s.ammo + amount),
+    })),
+}))
+// Mutable per-frame world state shared between systems without re-renders.
+// Mutable mobile touch input Ă˘â‚¬â€ť updated by MobileControls, read by Player
+export const mobileInput = {
+  x: 0,
+  y: 0,
+  boost: false,
+  shoot: false,
+}
+// Shared bullet pool Ă˘â‚¬â€ť written by Player, read by Enemies
+export type Bullet = {
+  pos: { x: number; y: number; z: number }
+  vel: { x: number; y: number; z: number }
+  life: number
+  active: boolean
+  damage: number
+}
+export const bullets: Bullet[] = Array.from({ length: 40 }, () => ({
+  pos: { x: 0, y: -9999, z: 0 },
+  vel: { x: 0, y: 0, z: 0 },
+  life: 0,
+  active: false,
+  damage: 25,
+}))
+// Med pack pickups Ă˘â‚¬â€ť written by MedPacks component, read by Player
+export type MedPack = {
+  id: string
+  pos: { x: number; y: number; z: number }
+  active: boolean
+  heal: number
+}
+export const medPacks: MedPack[] = []
+10 hidden lines
+
+procgen.ts
+
+lib/procgen.ts
+
+Edited
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+49
+60
+61
+62
+63
+64
+65
+66
+85
+86
+87
+88
+89
+90
+91
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+}
+export const CHUNK_SIZE = 56
+export const CELLS = 4 // 4x4 building cells per chunk
+export const VIEW_CHUNKS = 3 // radius of chunks kept alive around the player
+export type Building = {
+  x: number
+  z: number
+  w: number
+  d: number
+  h: number
+  neon: number // palette index
+  hasSpire: boolean
+}
+      const gx = cx * CELLS + i
+      const gz = cz * CELLS + j
+      const r = hash2(gx, gz)
+      if (r < 0.22) continue // empty lot / plaza
+      const r2 = hash2(gx, gz, 7331)
+      const r3 = hash2(gx, gz, 9001)
+      const r4 = hash2(gx, gz, 4242)
+      // District height bias: slow noise makes downtown cores emerge
+      const district = hash2(Math.floor(gx / 6), Math.floor(gz / 6), 555)
+      let h = 6 + r2 * r2 * 34 + district * district * 46
+      buildings.push({
+  return { key: `${cx},${cz}`, cx, cz, buildings }
+}
+// Deterministic collision: re-derive the building (if any) occupying a world position.
+export function buildingAt(x: number, z: number): Building | null {
+  const cell = CHUNK_SIZE / CELLS
+  const gx = Math.floor(x / cell)
+  return b
+}
+// Sector naming Ă˘â‚¬â€ť every chunk belongs to a named district, generated, infinite.
+const SYL_A = ['NEO', 'KUR', 'VOX', 'ZAI', 'HEX', 'RYU', 'OMN', 'DAT', 'SYN', 'KRA']
+const SYL_B = ['SHIMA', 'GRAD', 'TOWN', 'BLOK', 'WARD', 'DYNE', 'PORT', 'LINE', 'CORE', 'DEN']
+  return `${a}-${b} ${n}`
+}
+// Data shards: deterministic spawn points on a fine grid, spawned near the player.
+export const SHARD_CELL = 30
+export function shardAt(ix: number, iz: number): { x: number; y: number; z: number } | null {
+  const r = hash2(ix, iz, 8080)
+  if (r < 0.72) return null // ~28% of cells hold a shard
+  const ox = hash2(ix, iz, 8181) - 0.5
+  const oz = hash2(ix, iz, 8282) - 0.5
+  const y = 8 + hash2(ix, iz, 8383) * 30
+  return {
+    x: (ix + 0.5 + ox * 0.8) * SHARD_CELL,
+    y,
+    z: (iz + 0.5 + oz * 0.8) * SHARD_CELL,
+  }
+}
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+39
+40
+41
+42
+43
+44
+45
+46
+47
+48
+59
+60
+61
+62
+63
+64
+83
+84
+85
+86
+87
+88
+95
+96
+97
+98
+99
+100
+101
+102
+103
+104
+105
+106
+107
+108
+109
+110
+111
+112
+113
+114
+115
+116
+117
+118
+119
+120
+121
+122
+123
+124
+125
+126
+127
+128
+129
+130
+131
+132
+133
+134
+135
+136
+137
+138
+139
+140
+141
+142
+143
+144
+145
+146
+147
+148
+149
+150
+151
+152
+153
+154
+155
+156
+157
+158
+159
+160
+161
+162
+163
+164
+165
+166
+167
+168
+169
+170
+171
+172
+173
+174
+175
+176
+177
+178
+179
+180
+181
+182
+183
+184
+185
+186
+187
+188
+189
+190
+191
+192
+193
+194
+195
+196
+197
+198
+199
+200
+201
+202
+export const CELLS = 4 // 4x4 building cells per chunk
+export const VIEW_CHUNKS = 3 // radius of chunks kept alive around the player
+  neon: number // palette index
+      if (r < 0.22) continue // empty lot / plaza
+      // District height bias: slow noise makes downtown cores emerge
+// Deterministic collision: re-derive the building (if any) occupying a world position.
+// Sector naming Ă˘â‚¬â€ť every chunk belongs to a named district, generated, infinite.
+// Data shards: deterministic spawn points on a fine grid, spawned near the player.
+export const SHARD_CELL = 30
+export function shardAt(ix: number, iz: number): { x: number; y: number; z: number } | null {
+  const r = hash2(ix, iz, 8080)
+  if (r < 0.72) return null // ~28% of cells hold a shard
+  const ox = hash2(ix, iz, 8181) - 0.5
+  const oz = hash2(ix, iz, 8282) - 0.5
+  const y = 8 + hash2(ix, iz, 8383) * 30
+    x: (ix + 0.5 + ox * 0.8) * SHARD_CELL,
+    z: (iz + 0.5 + oz * 0.8) * SHARD_CELL,
+}
+export const CHUNK_SIZE = 56
+export const CELLS = 4
+export const VIEW_CHUNKS = 3
+export type Building = {
+  x: number
+  z: number
+  w: number
+  d: number
+  h: number
+  neon: number
+  hasSpire: boolean
+}
+      const gx = cx * CELLS + i
+      const gz = cz * CELLS + j
+      const r = hash2(gx, gz)
+      if (r < 0.22) continue
+      const r2 = hash2(gx, gz, 7331)
+      const r3 = hash2(gx, gz, 9001)
+      const r4 = hash2(gx, gz, 4242)
+      const district = hash2(Math.floor(gx / 6), Math.floor(gz / 6), 555)
+      let h = 6 + r2 * r2 * 34 + district * district * 46
+      buildings.push({
+  return { key: `${cx},${cz}`, cx, cz, buildings }
+}
+export function buildingAt(x: number, z: number): Building | null {
+  const cell = CHUNK_SIZE / CELLS
+  const gx = Math.floor(x / cell)
+  return b
+}
+const SYL_A = ['NEO', 'KUR', 'VOX', 'ZAI', 'HEX', 'RYU', 'OMN', 'DAT', 'SYN', 'KRA']
+const SYL_B = ['SHIMA', 'GRAD', 'TOWN', 'BLOK', 'WARD', 'DYNE', 'PORT', 'LINE', 'CORE', 'DEN']
+  return `${a}-${b} ${n}`
+}
+// Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬ Level-based enemy config Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬Ă˘â€ťâ‚¬
+export type EnemyType = 'scout' | 'gunship' | 'tank' | 'turret'
+export type EnemyConfig = {
+  type: EnemyType
+  count: number
+  health: number
+  speed: number
+  damage: number
+  fireRate: number // shots per second
+  range: number
+  score: number
+}
+export function getLevelEnemyConfig(level: number): EnemyConfig[] {
+  const configs: EnemyConfig[] = []
+  // Scouts Ă˘â‚¬â€ť fast, weak, always present
+  configs.push({
+    type: 'scout',
+    count: Math.min(4 + level * 2, 18),
+    health: 30 + level * 5,
+    speed: 10 + level * 1.5,
+    damage: 8 + level * 2,
+    fireRate: 0.8 + level * 0.1,
+    range: 40 + level * 3,
+    score: 50,
+  })
+  // Gunships Ă˘â‚¬â€ť medium, appear from level 2
+  if (level >= 2) {
+    configs.push({
+      type: 'gunship',
+      count: Math.min(2 + level, 10),
+      health: 60 + level * 10,
+      speed: 7 + level,
+      damage: 15 + level * 3,
+      fireRate: 0.5 + level * 0.08,
+      range: 55 + level * 4,
+      score: 150,
+    })
+  }
+  // Tanks Ă˘â‚¬â€ť slow, heavy, appear from level 3
+  if (level >= 3) {
+    configs.push({
+      type: 'tank',
+      count: Math.min(1 + Math.floor(level / 2), 6),
+      health: 120 + level * 20,
+      speed: 4 + level * 0.5,
+      damage: 25 + level * 5,
+      fireRate: 0.3 + level * 0.05,
+      range: 65 + level * 5,
+      score: 300,
+    })
+  }
+  // Turrets Ă˘â‚¬â€ť stationary, appear from level 4
+  if (level >= 4) {
+    configs.push({
+      type: 'turret',
+      count: Math.min(Math.floor(level / 2), 8),
+      health: 80 + level * 15,
+      speed: 0,
+      damage: 20 + level * 4,
+      fireRate: 1.2 + level * 0.1,
+      range: 80 + level * 6,
+      score: 200,
+    })
+  }
+  return configs
+}
+// Med pack spawn grid
+export const MED_CELL = 80
+export function medPackAt(ix: number, iz: number, level: number): { x: number; y: number; z: number } | null {
+  const r = hash2(ix, iz, 5050 + level)
+  // More med packs on higher levels (harder)
+  const threshold = 0.88 - level * 0.01
+  if (r < threshold) return null
+  const ox = hash2(ix, iz, 5151) - 0.5
+  const oz = hash2(ix, iz, 5252) - 0.5
+  const y = 10 + hash2(ix, iz, 5353) * 20
+  return {
+    x: (ix + 0.5 + ox * 0.7) * MED_CELL,
+    y,
+    z: (iz + 0.5 + oz * 0.7) * MED_CELL,
+  }
+}
+// Level exit portal Ă˘â‚¬â€ť placed ahead of player start
+export function getLevelExitPos(level: number): { x: number; y: number; z: number } {
+  // Each level exit is further away
+  const dist = 200 + level * 80
+  const angle = (level * 1.618) * Math.PI * 2
+  return {
+    x: Math.sin(angle) * dist,
+    y: 18,
+    z: Math.cos(angle) * dist,
+  }
+}
+8 hidden lines  |  
+ hash2
+14 hidden lines  |  
+ generateChunk
+10 hidden lines
+18 hidden lines
+6 hidden lines  |  
+ sectorName
+
+
+
