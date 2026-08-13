@@ -17,7 +17,7 @@ export function Bullets() {
     for (let i = 0; i < count; i++) {
       const b = bullets[i]
       dummy.position.set(b.x, b.y, b.z)
-      dummy.scale.setScalar(0.2)
+      dummy.scale.setScalar(0.3)
       dummy.updateMatrix()
       m.setMatrixAt(i, dummy.matrix)
     }
@@ -27,7 +27,7 @@ export function Bullets() {
 
   return (
     <instancedMesh ref={mesh} args={[undefined, undefined, 128]} frustumCulled={false}>
-      <sphereGeometry args={[0.2, 6, 6]} />
+      <sphereGeometry args={[0.3, 8, 8]} />
       <meshBasicMaterial toneMapped={false} color="#ffd966" />
     </instancedMesh>
   )

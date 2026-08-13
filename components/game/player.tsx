@@ -27,10 +27,24 @@ export function Player() {
   const bank = useRef(0)
   const pitch = useRef(0)
   const fireCooldown = useRef(0)
+  const muzzleRef = useRef<THREE.Mesh | null>(null)
 
   useEffect(() => {
     const cleanup = initKeyboardListeners()
     return cleanup
+  }, [])
+
+  useEffect(() => {
+    const handler = () => {
+      if (muzzleRef.current) {
+        muzzleRef.current.visible = true
+        setTimeout(() => {
+          if (muzzleRef.current) muzzleRef.current.visible = false
+        }, 90)
+      }
+    }
+    window.addEventListener('game:spawnBullet', handler)
+    return () => window.removeEventListener('game:spawnBullet', handler)
   }, [])
 
   useFrame((_, rawDt) => {
@@ -60,7 +74,7 @@ export function Player() {
       const by = world.playerPos.y
       const bz = world.playerPos.z + dirZ * 2
       const speed = 80
-      spawnBullet(bx, by, bz, dirX * speed, 0, dirZ * speed, 2)
+      spawnBullet(bx, by, bz, dirX * speed, 0, dirZ * speed, 3)
       fireCooldown.current = 0.18 // ~5.5 shots/sec
     }
 
@@ -154,6 +168,12 @@ export function Player() {
         <meshStandardMaterial color="#00f0ff" emissive="#00f0ff" emissiveIntensity={6} />
       </mesh>
       <pointLight position={[0, 0, -1.5]} color="#00f0ff" intensity={12} distance={14} />
+
+      {/* Muzzle flash (brief) */}
+      <mesh ref={muzzleRef} position={[0, 0, -2]} visible={false}>
+        <sphereGeometry args={[0.25, 8, 8]} />
+        <meshBasicMaterial toneMapped={false} color="#ffd966" />
+      </mesh>
     </group>
   )
 }

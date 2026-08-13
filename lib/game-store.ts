@@ -20,6 +20,7 @@ type GameState = {
   setSpeed: (s: number) => void
   setSector: (s: string) => void
   start: () => void
+  toggleStart: () => void
   takeDamage: (d: number) => void
   registerKill: (score?: number) => void
 }
@@ -43,6 +44,7 @@ export const useGame = create<GameState>((set, get) => ({
   setSpeed: (speed) => set({ speed }),
   setSector: (sector) => set({ sector }),
   start: () => set({ started: true, phase: 'playing' }),
+  toggleStart: () => set((s) => ({ started: !s.started, phase: !s.started ? 'playing' : 'intro' })),
   takeDamage: (d: number) => {
     set((s) => {
       const next = Math.max(0, s.health - d)
