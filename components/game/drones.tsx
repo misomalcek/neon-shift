@@ -54,7 +54,7 @@ export function Drones() {
     playerV.set(p.x, p.y, p.z)
     hitCooldown.current = Math.max(0, hitCooldown.current - dt)
 
-    // Update bullets physics here so collisions are deterministic in the same loop
+    // update bullets
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i]
       b.x += b.vx * dt

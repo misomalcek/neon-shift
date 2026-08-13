@@ -8,6 +8,7 @@ import { Player } from './player'
 import { Drones } from './drones'
 import { Shards } from './shards'
 import { Hud } from './hud'
+import { Bullets } from './bullets'
 
 export default function Game() {
   return (
@@ -17,10 +18,10 @@ export default function Game() {
         gl={{ antialias: false }}
         dpr={[1, 1.5]}
       >
-        <color attach="background" args={['#05030c']} />
-        <fog attach="fog" args={['#05030c', 40, 220]} />
+        <color attach="background" args={["#05030c"]} />
+        <fog attach="fog" args={["#05030c", 40, 220]} />
         <ambientLight intensity={0.7} color="#5560cc" />
-        <hemisphereLight args={['#3a3a80', '#12081f', 0.9]} />
+        <hemisphereLight args={["#3a3a80", "#12081f", 0.9]} />
         <directionalLight position={[30, 60, -20]} intensity={1.4} color="#8a70ff" />
 
         <Grid
@@ -39,6 +40,7 @@ export default function Game() {
         <Shards />
         <Drones />
         <Player />
+        <Bullets />
 
         <EffectComposer>
           <Bloom intensity={1.1} luminanceThreshold={1} mipmapBlur />

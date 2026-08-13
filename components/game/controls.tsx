@@ -1,19 +1,32 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { setKey, setJoy, resetKeys } from '@/lib/input'
-import { useGame } from '@/lib/game-store'
+import { setKey, setJoy } from '@/lib/input'
+import { useGame, world } from '@/lib/game-store'
+import { spawnBullet } from '@/lib/weapons'
 
 export function Controls() {
   const padRef = useRef<HTMLDivElement | null>(null)
   const activeRef = useRef<number | null>(null)
   const [visible, setVisible] = useState(false)
   const start = useGame((s) => s.start)
+  const started = useGame((s) => s.started)
+  const firingRef = useRef(false)
+  const fireLoopRef = useRef<number | null>(null)
 
   // Show controls on touch devices
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setVisible('ontouchstart' in window || navigator.maxTouchPoints > 0)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (fireLoopRef.current != null) {
+        clearInterval(fireLoopRef.current)
+        fireLoopRef.current = null
+      }
     }
   }, [])
 
@@ -33,7 +46,7 @@ export function Controls() {
   }
 
   const onPointerDownPad = (e: React.PointerEvent) => {
-    (e.target as Element).setPointerCapture(e.pointerId)
+    ;(e.target as Element).setPointerCapture(e.pointerId)
     activeRef.current = e.pointerId
     updateJoyFromPointer(e.clientX, e.clientY)
   }
@@ -42,18 +55,48 @@ export function Controls() {
     updateJoyFromPointer(e.clientX, e.clientY)
   }
   const onPointerUpPad = (e: React.PointerEvent) => {
-    (e.target as Element).releasePointerCapture?.(e.pointerId)
+    ;(e.target as Element).releasePointerCapture?.(e.pointerId)
     activeRef.current = null
     setJoy(0, 0)
   }
 
   const onBoostDown = () => setKey('ShiftLeft', true)
   const onBoostUp = () => setKey('ShiftLeft', false)
-  const onFireDown = () => setKey('Space', true)
-  const onFireUp = () => setKey('Space', false)
+
+  const doFireOnce = () => {
+    if (!started) return
+    const dirX = Math.sin(world.heading)
+    const dirZ = Math.cos(world.heading)
+    const bx = world.playerPos.x + dirX * 2
+    const by = world.playerPos.y
+    const bz = world.playerPos.z + dirZ * 2
+    const speed = 80
+    spawnBullet(bx, by, bz, dirX * speed, 0, dirZ * speed, 2)
+    // tactile muzzle bump
+    world.boost = Math.min(12, world.boost + 0.6)
+  }
+
+  const startAutoFire = () => {
+    if (firingRef.current) return
+    firingRef.current = true
+    doFireOnce()
+    fireLoopRef.current = window.setInterval(doFireOnce, 180)
+  }
+  const stopAutoFire = () => {
+    firingRef.current = false
+    if (fireLoopRef.current != null) {
+      clearInterval(fireLoopRef.current)
+      fireLoopRef.current = null
+    }
+  }
+
+  const onFireDown = () => startAutoFire()
+  const onFireUp = () => stopAutoFire()
+
   const onStart = () => {
-    // start game (HUD start button already calls this, but add here too)
-    start()
+    // if not started, start the game; otherwise toggle pause via start/stop
+    if (!started) start()
+    else start()
   }
 
   if (!visible) return null
