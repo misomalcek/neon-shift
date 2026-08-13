@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -22,16 +22,29 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '20.9.0'
 
       - name: Show Node/npm versions
         run: |
           node -v
           npm -v
+
+      - name: Remove old gh-pages branch (if present)
+        run: |
+          set -e
+          git fetch origin
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            echo "gh-pages branch exists on origin — deleting to avoid conflicting publishes"
+            git push origin --delete gh-pages || echo "delete failed or no permission"
+          else
+            echo "no gh-pages branch on origin"
+          fi
 
       - name: Install dependencies
         run: |
@@ -44,12 +57,23 @@ jobs:
             npm install --no-audit --prefer-offline
           fi
 
-      - name: Build and export
+      - name: Build
         run: |
+          set -e
           npm run build
-          npm run export
+          echo "---- build root listing ----"
+          ls -la
+          echo "---- check out/ ----"
+          if [ -d out ]; then
+            echo "out/ exists"
+            ls -la out | sed -n '1,200p'
+          else
+            echo "out/ not found — next build didn't produce a static export (output: 'export' expected)"
+            exit 1
+          fi
 
       - name: Ensure .nojekyll
+        if: success()
         run: echo "" > out/.nojekyll
 
       - name: Upload artifact for GitHub Pages
