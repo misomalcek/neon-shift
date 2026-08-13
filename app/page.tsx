@@ -1,16 +1,22 @@
-export default function Home() {
+'use client'
+
+import dynamic from 'next/dynamic'
+
+const Game = dynamic(() => import('@/components/game/game'), {
+  ssr: false,
+  loading: () => (
+    <main className="flex h-dvh w-full items-center justify-center bg-background">
+      <p className="animate-pulse font-mono text-xs tracking-[0.4em] text-primary">
+        BOOTING CITY...
+      </p>
+    </main>
+  ),
+})
+
+export default function Page() {
   return (
-    <div className="flex min-h-screen items-center justify-center font-sans">
-      <main className="flex w-full max-w-3xl flex-col items-center gap-8 px-6 py-16 text-center sm:items-start sm:text-left">
-        <div className="flex flex-col gap-4">
-          <h1 className="text-4xl font-bold tracking-tight">
-            game
-          </h1>
-          <p className="max-w-md text-lg text-muted-foreground">
-            To get started, send a prompt or modify this page directly.
-          </p>
-        </div>
-      </main>
-    </div>
-  );
+    <main>
+      <Game />
+    </main>
+  )
 }
