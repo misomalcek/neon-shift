@@ -1,22 +1,30 @@
+'use client'
+
 import { create } from 'zustand'
 
 type GameState = {
   shards: number
   best: number
-  heat: number // 0..1 — how agitated the drone swarm is
+  heat: number // 0..1 — how agitated the drone swarm / enemies are
   speed: number
   sector: string
   hits: number
   started: boolean
+  health: number
+  maxHealth: number
+  phase: 'intro' | 'playing' | 'level_complete'
+  level: number
   collect: () => void
   loseShard: () => void
   setHeat: (h: number) => void
   setSpeed: (s: number) => void
   setSector: (s: string) => void
   start: () => void
+  takeDamage: (d: number) => void
+  registerKill: (score?: number) => void
 }
 
-export const useGame = create<GameState>((set) => ({
+export const useGame = create<GameState>((set, get) => ({
   shards: 0,
   best: 0,
   heat: 0,
@@ -24,14 +32,29 @@ export const useGame = create<GameState>((set) => ({
   sector: '',
   hits: 0,
   started: false,
+  health: 100,
+  maxHealth: 100,
+  phase: 'intro',
+  level: 1,
   collect: () =>
     set((s) => ({ shards: s.shards + 1, best: Math.max(s.best, s.shards + 1) })),
-  loseShard: () =>
-    set((s) => ({ shards: Math.max(0, s.shards - 2), hits: s.hits + 1 })),
+  loseShard: () => set((s) => ({ shards: Math.max(0, s.shards - 2), hits: s.hits + 1 })),
   setHeat: (heat) => set({ heat }),
   setSpeed: (speed) => set({ speed }),
   setSector: (sector) => set({ sector }),
-  start: () => set({ started: true }),
+  start: () => set({ started: true, phase: 'playing' }),
+  takeDamage: (d: number) => {
+    set((s) => {
+      const next = Math.max(0, s.health - d)
+      if (next === 0) {
+        // on death, move to intro and reset some state
+        return { health: 0, started: false, phase: 'intro' }
+      }
+      return { health: next }
+    })
+  },
+  registerKill: (score = 1) =>
+    set((s) => ({ shards: s.shards + score, best: Math.max(s.best, s.shards + score) })),
 }))
 
 // Mutable per-frame world state shared between systems without re-renders.
