@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build && next export",
-    "export": "next export",
+    "build": "next build",
+    "export": "echo \"export handled by next build (output: 'export' in next.config.js)\"",
     "start": "next start",
     "lint": "eslint ."
   },
